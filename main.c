@@ -2,13 +2,13 @@
   Generated main.c file from MPLAB Code Configurator
 
   @Company
-    Microchip Technology Inc.
+    OMBAS
 
   @File Name
     main.c
 
   @Summary
-    This is the generated main.c using PIC24 / dsPIC33 / PIC32MM MCUs.
+    TDuC controller designed by OMBAS for TECNODALVO.
 
   @Description
     This source file provides main entry point for system initialization and application code development.
@@ -41,27 +41,15 @@
     MICROCHIP PROVIDES THIS SOFTWARE CONDITIONALLY UPON YOUR ACCEPTANCE OF THESE
     TERMS.
 */
+/******************************************************************************/
+/**  Section: Included Files                                                  */
+/******************************************************************************/
 
-/**
-  Section: Included Files
-*/
 #include "mcc_generated_files/system.h"
-
-/******************************************************************************/
-/* Main Program                                                               */
-/******************************************************************************/
-
-//Quï¿½ salida es la que enciende el calentador
-#define MainOutput  BUS595_data.OUT_AC2
-
-#define LightOutput BUS595_data.OUT_AC3
 
 #include <stdint.h>         /* For uint32_t definition                        */
 #include <stdbool.h>
 #include <string.h>        /* For true/false definition                      */
-
-//#include "system.h"         /* System funct/params, like osc/periph config    */
-//#include "user.h"           /* User funct/params, such as InitApp             */
 
 #include "include.h"
 #include "MCP_3913.h"
@@ -75,45 +63,48 @@
 #include "mcc_generated_files/mccp1_compare.h"
 
 
-void StandBy(void);
-void Config(void);
-void Process(void);
-void ChangeState(int change);
-void CalTwoPoints (void);
-void CalMultiPoints(void);
+/******************************************************************************/
+/**  Section: Function prototypes                                             */
+/******************************************************************************/
+void StandBy(void);                             //Handles StandBy state
+void Config(void);                              //Handles Config state
+void Process(void);                             //Handles Process (heating) state
+void ChangeState(int change);                   //Handles state changes
+void CalTwoPoints (void);                       //Handles Two Point Temperature Calibration
+void CalMultiPoints(void);                      //Handles MultiPoint Temperature Calibration
 
-void PID(void);
-void SmartPID(void);
+void PID(void);                                 //PID Controller. Computes heating power
+void SmartPID(void);                            //PID Supervisor. 
 void CheckOvershoot(void);
-void PID_Autotune(void);
+void PID_Autotune(void);                        //PID Autotune. Computes PID parameters
 
-void Delayms(int tiempo);
-char Decode_7seg(char num);
-void Refresh_digits(void);
-void Rotate_LEDs (unsigned char sentido);
+void Delayms(int tiempo);                       //Small delay
+void Refresh_digits(void);                      //Refresh display data
+void Rotate_LEDs (unsigned char sentido);       //Handles rotation of encoder LEDs
 
-void Process_number(int num);
+void Process_number(int num);                   //Separates digits from number to decode
+char Decode_7seg(char num);                     //Decode digit to 7segments
+
 void ADC_CallBack(void);
 
-
-void Check_EEPROM(void);
-void Write_EEPROM(unsigned long Address, unsigned long Value);
-
 //Grabo en EEPROM emulada parámetros del equipo
-void Save_ConfigEEPROM(void);
-void Save_KPID_EEPROM(void);
-void Save_TempCorrection_EEPROM(void);
-void Save_TempFactCorrection_EEPROM(void);
+void Check_EEPROM(void);                        //Verify EEPROM at startup, and gets stored parameters
+void Write_EEPROM(unsigned long Address, unsigned long Value);      //Writes EEPROM value to Address
+void Save_ConfigEEPROM(void);                   //Saves configuration parameters to EEPROM
+void Save_KPID_EEPROM(void);                    //Saves PID parameters to EEPROM
+void Save_TempCorrection_EEPROM(void);          //Saves ADC to Temperature conversion constants
+void Save_TempFactCorrection_EEPROM(void);      //Saves ADC to Temperature FACTORY conversion constants
 
-void PID(void);
+void ProcessUART(void);                         //Processes USB-UART commands
 
-void ProcessUART(void);
+//Peltier cell functions
+void PeltierOff(void);                          //Turns OFF peltier module and Fans                    
+void CoolDown(unsigned int HowMuch);            //Sets H Bridge to cooling, with "HowMuch" PWM
+void HeatUp(unsigned int HowMuch);              //Sets H Bridge to heating, with "HowMuch" PWM
 
-void PeltierOff(void);
-void CoolDown(unsigned int HowMuch);
-void HeatUp(unsigned int HowMuch);
-
-
+/******************************************************************************/
+/* Main Program                                                               */
+/******************************************************************************/
 int32_t main(void)
 {
 
@@ -124,26 +115,12 @@ int32_t main(void)
 //    DDPCONbits.JTAGEN = 0;
 #endif
 
-    /*Refer to the C32 peripheral library documentation for more
-    information on the SYTEMConfig function.
-
-    This function sets the PB divider, the Flash Wait States, and the DRM
-    /wait states to the optimum value.  It also enables the cacheability for
-    the K0 segment.  It could has side effects of possibly alter the pre-fetch
-    buffer and cache.  It sets the RAM wait states to 0.  Other than
-    the SYS_FREQ, this takes these parameters.  The top 3 may be '|'ed
-    together:
-
-    SYS_CFG_WAIT_STATES (configures flash wait states from system clock)
-    SYS_CFG_PB_BUS (configures the PB bus from the system clock)
-    SYS_CFG_PCACHE (configures the pCache if used)
-    SYS_CFG_ALL (configures the flash wait states, PB bus, and pCache)*/
-
     /* TODO Add user clock/system configuration code if appropriate.  */
     SYSTEM_Initialize();
 
     /* TODO <INSERT USER APPLICATION CODE HERE> */
 
+    //****************************Start by cleaning up the display
     SPI1BUF=nada;
     while(SPI1STATbits.SPIBUSY){};
     SPI1BUF=nada;
@@ -156,9 +133,11 @@ int32_t main(void)
     Delayms(1);
     Refresh_SetLow();
     
-
+    //***************************Turn Peltier module OFF
+#ifdef POWER_OUTPUT_C    
     PeltierOff();
-//Change USB Serial Number    
+#endif
+    //********************************Change USB Serial Number    
     SNPointer=SerialNumber+0x80000000;
     SN.L=*SNPointer;                    
     //sprintf(st_aux,"%04X%08X",SModel,SN.L);
@@ -175,18 +154,28 @@ int32_t main(void)
     /*if(SPI1STATbits.FRMERR) {
        SPI1STATbits.FRMERR=0;
     }*/
+    
     RST_MCP_SetLow();
 
+    //***************Turns front panel LEDs OFF
     LED_Cancel_SetLow();
     LED_Luz_SetLow();
     LED_USB_SetLow();
     LED_Motor_SetLow();
+    led.r=0;
+    led.g=0;
+    led.b=0;
+    ws2812_send(&led);
     //LED_Temp_SetLow();
     //Buzzer_SetLow();
     //SN=SerialNumber;
     uc_error=ERROR_TURN_ON;     //Se enciende por primera vez, prende led rojo de logo
-
+    
+    //**************************************Check EEPROM at startup
+    //*****************retrieves stored parameters and calibration constants
     Check_EEPROM();
+    
+    //************************ External ADC Configuration
     timeout=0;
     LED_Cancel_SetHigh();
     do{
@@ -221,10 +210,6 @@ int32_t main(void)
     //smartPID.ul_reachTIMEOUT=999;
     calentar.timeSet=TimeDefault.i;    //Tiempo seteado por defecto
     calentar.tempSet=TempDefault.i;
-    //K_PID.Kp2=539.05;
-    //K_PID.Ki2=1092;
-    //K_PID.Kd2=223.425;
-
 
     PID_calc.I_termMAX=500000;              //Max accumulated Iterm is 50.000 ºC
     PID_calc.I_termMin=500;                 //Min accumulated Iterm is 50ºC
@@ -236,15 +221,13 @@ int32_t main(void)
     tecla.tiempo=0;
     tecla.cual=nada;
 
-    BUS595_data.RGB_K=1;
-
     //*********************************Datalog disable
     datalog.pointer=0;
     datalog.timeout=0;
     datalog.tiempo=0;
     //************************************************
 
-    
+#ifdef POWER_OUTPUT_C    
     //********************************** Cooling and Heating MAX PWM
     CCP1RA=0;
     CCP1PR=0xFFFF;                      //Colling PWM Period
@@ -264,25 +247,25 @@ int32_t main(void)
     CoolDown_EN=1;*/
 
     //***************************************************************
+#endif
     
     TMR3_Start();
-    //TMR2_Stop();
     TMR2_Start();
     flg_muestro=Temp_Set;
-    //flg_debug=1;
-    //TMR1_Stop();
-    led.r=0;
-    led.g=0;
-    led.b=0;
-    ws2812_send(&led);
 
+
+    //*************************************END of POST. Start MAIN Loop
     while(1)
     {
+        //****************************Reads ADC value
         if(operationFlgs.readADC){        //Lee ADC MCP
             Read_MCP();
             operationFlgs.readADC=0;
         }
+        //*******************************************
         
+        
+        //***************************************What is doing
         switch(uc_estado) {
             case state_StandBy:
                 StandBy();
@@ -303,21 +286,22 @@ int32_t main(void)
                 CalMultiPoints();
                 break;
             default:
-                ChangeState(state_StandBy);
+                ChangeState(state_StandBy); //If there was an error in state, goes to StandBy
         }
+        
+        //*********************************************************
 
+        
+        //***************************Is USB attached?
+        if(U1OTGSTATbits.VBUSVD) LED_USB_SetHigh();			//checks VBus level, and if high, turns USB LED on
+        else LED_USB_SetLow();			//Otherwise, is not connected, turns USB LED Off
+        
+        //*************************************Checks for USB connection and checks if there's a new command.
         if(USBGetDeviceState()>30) {
-            //LED_USB_SetHigh();
+
             CDCTxService();
 
-            /*if(uc_USBCounter>20) {
-                sprintf(st_UART2,"T: %.2f ---- I: %.2f\n\r",f_temp/10, f_lm334 );
-                if(USBUSARTIsTxTrfReady()) putsUSBUSART(st_UART2);
-                uc_USBCounter=0;
-            };*/
-
             if(ui_USBinitDelay>100){
-                //LED_USB_SetHigh();
                 uc_RX_bytes=getsUSBUSART(st_RX_Buffer,25);
                 if(uc_RX_bytes) {
                     //if(USBUSARTIsTxTrfReady()) putsUSBUSART(st_RX_Buffer);
@@ -333,13 +317,12 @@ int32_t main(void)
                             break;
                         }
                     }
-                }//*/
+                }
             }
-        } //else LED_USB_SetLow();
-        
-        if(U1OTGSTATbits.VBUSVD) LED_USB_SetHigh();			//checks VBus level, and if high, turns USB LED on
-        else LED_USB_SetLow();			//Otherwise, is not connected, turns USB LED Off
+        } 
 
+        //*****************************************If USB is attached, and ready to send
+        //**************Checks whether there's a message to be sent
         if(USBUSARTIsTxTrfReady()){
             if(datalog.flg_send) {
                 putsUSBUSART(st_download);
@@ -353,6 +336,7 @@ int32_t main(void)
                 flg_send2=0;                
             }
         }
+        //*********************************************************************************
 
         //asm ("wait");
         //_wait();
@@ -360,47 +344,62 @@ int32_t main(void)
     }
 }
 
+
+//******************************************************************************
+//                     Two Point Calibration State routine
+//******************************************************************************
 void CalTwoPoints (void) {
-    if(calibration.flg_newData) {
-        calibration.flg_newData=0;
-        if(calibration.flg_1er) {
-            calibration.f_tempA=calibration.f_newData;
-            calibration.ul_mcpA=f_mcp;
-            calibration.flg_1er=0;
-        } else {
-            calibration.f_tempB=calibration.f_newData;
-            calibration.ul_mcpB=f_mcp;
-            calibration.f_pendiente=calibration.f_tempB-calibration.f_tempA;
+    if(calibration.flg_newData) {   ///If there's a new data received via USB
+        calibration.flg_newData=0;              
+        if(calibration.flg_1er) {               //Is it the first data point?
+            calibration.f_tempA=calibration.f_newData;      //Current temp is received data
+            calibration.ul_mcpA=f_mcp;                      //Current ADC Value
+            calibration.flg_1er=0;                          //done with first data
+        } else {                                //Second temperature data
+            calibration.f_tempB=calibration.f_newData;          //Current temp is new data
+            calibration.ul_mcpB=f_mcp;                          //Point B temp. ADC value
+            //*************Computes slope
+            calibration.f_pendiente=calibration.f_tempB-calibration.f_tempA;            
             calibration.f_CalAux=calibration.ul_mcpB-calibration.ul_mcpA;
             if(calibration.f_CalAux) {
                 calibration.f_pendiente/=calibration.f_CalAux;
             } else uc_error=ERROR_MCP;
+            
+            //***********Computes "y-intercept"
             calibration.f_CalAux=calibration.f_pendiente*calibration.ul_mcpB;
             calibration.f_Cslope=calibration.f_CalAux-calibration.f_tempB;
 
+            //******************Prints calculated value to USB
             sprintf(st_UART,"K:%.6f:C:%.6f",calibration.f_pendiente,calibration.f_Cslope);
             flg_send=1;
+            
+            //*******************Stores calculated values to ADC-Conversion parameters
             Convert.C_temp=calibration.f_Cslope;
             Convert.K_temp=calibration.f_pendiente;
 
-            //Convert.K_temp=0.000916662;//0.435423541;//0.000730519;//0.0007333294;
-            Save_TempCorrection_EEPROM();
+            Save_TempCorrection_EEPROM();            //Stores new data to EEPROM
 
-            ChangeState(state_Config);
+            ChangeState(state_Config);                  //Returns to Config State
         }
     }
 
+    //**************************************************************************
+    //Waits for pre-heating at full power, and then asks for Point B
+    
     if(!calibration.ui_PreHeatTimeout) {            //Cuando termina de pre-calentar
         if(calibration.flg_dataB) {
-            sprintf(st_UART,"Cal2pt_B\n\r");  //Pide Punto B
+            sprintf(st_UART,"Cal2pt_B\n\r");        //Pide Punto B
             flg_send=1;
             calibration.flg_dataB=0;                //En tmr1 vuelve a pedir luego de 10 segundos, por las dudas
         }
     }
 }
 
+//******************************************************************************
+//                     MultiPoint Calibration State routine
+//******************************************************************************
 void CalMultiPoints (void) {
-    if(calibration.flg_newData) {
+    if(calibration.flg_newData) {               //There's a new data received
         calibration.flg_newData=0;
 
         calibration.uc_NPoints++;               //Cantidad de valores recibidos hasta el momento
@@ -412,15 +411,15 @@ void CalMultiPoints (void) {
         calibration.f_CalAux=f_mcp*f_mcp;       //Cï¿½lculo auxiliar X^2
         calibration.f_sumX2+=calibration.f_CalAux;          //Sumatoria X^2
 
-        if(calibration.flg_1er) {
+        if(calibration.flg_1er) {                   //First value received
             calibration.f_tempA=calibration.f_newData;          //Temperatura ingresada por USB-UART
-            calibration.ul_mcpA=f_mcp;              //Temperatura ADC
+            calibration.ul_mcpA=f_mcp;                          //Temperatura ADC
             calibration.flg_1er=0;
             calibration.flg_dataB=1;
         } else if (calibration.flg_dataB) {
-            calibration.flg_dataB=0;                //primer pendiente calculada
+            calibration.flg_dataB=0;                            //primer pendiente calculada
             calibration.f_tempB=calibration.f_newData;          //Temperatura ingresada por USB-UART
-            calibration.ul_mcpB=f_mcp;              //Temperatura ADC
+            calibration.ul_mcpB=f_mcp;                          //Temperatura ADC
 
             calibration.f_pendiente=calibration.f_tempB-calibration.f_tempA;//Diferencia de temperatura medida
             calibration.f_CalAux=calibration.ul_mcpB-calibration.ul_mcpA;      //Diferencia de temperatura ADC
@@ -474,9 +473,9 @@ void CalMultiPoints (void) {
         }
     }
 
-    if(calibration.flg_CalEnd) {
-        calibration.f_CalAux=calibration.uc_NPoints-1;
-        if(calibration.f_CalAux) {
+    if(calibration.flg_CalEnd) {                                //End of Calibration command received.
+        calibration.f_CalAux=calibration.uc_NPoints-1;              //Computes linear regression
+        if(calibration.f_CalAux) {                              //Verifies that there are more than 1 point taken
             calibration.f_pendAcum/=calibration.f_CalAux;     //Promedio tradicional de Pendiente
             calibration.f_CAcum/=calibration.f_CalAux;        //Promedio tradicional de C
         } else {
@@ -505,23 +504,32 @@ void CalMultiPoints (void) {
         //sprintf(st_UART,"A1:%.6f-B1:%.6f\n\rA2:%.6f-B2:%.6f\n\r",f_PendAcum,f_CAcum,f_pendiente,f_Cslope);  //Pide Punto B
         //flg_send=1;
 
+        //***************************************** Sets ADC conversion constants with calculated values
         Convert.K_temp=calibration.f_pendiente;
         Convert.C_temp=-1*calibration.f_Cslope;
 
+        //***************************************** Sets ADC conversion FACTORY constants with calculated values
         Convert.K_tempFactory=Convert.K_tempFactory;
         Convert.C_tempFactory=Convert.C_temp;
         
+        //***************************************** Saves data to EEPROM
         Save_TempCorrection_EEPROM();           //saves temp correction to Emulated EEPROM
         Save_TempFactCorrection_EEPROM();       //saves factory correction to emulated EEPROM
 
-        sprintf(st_UART,"MPtCalibration Ends\n\r");
+        sprintf(st_UART,"MPtCalibration Ends\n\r");             //Informs via USB that calibration finished
         flg_send=1;
-        ChangeState(state_Config);
+        ChangeState(state_Config);                              //returns to Config State
     }
 }
 
-void StandBy (void) {
 
+//******************************************************************************
+//                     Stand By State routine
+//
+//Checks for encoder Switch to turn on.
+//******************************************************************************
+
+void StandBy (void) {
     if(!flg_turnoff){
         if(tecla.estado && tecla.cual==BT_Encoder){             //Está siendo presionada la tecla del encoder
             if(tecla.tiempo>20) {                           //Durante más de 2 segundos
@@ -531,9 +539,14 @@ void StandBy (void) {
             }
         }
     }
-
 }
 
+
+//******************************************************************************
+//                     Config State routine
+//
+//Checks for encoder Switch and rotation value to set temperature and time
+//******************************************************************************
 void Config (void) {
 
     /*if(flg_turnoff&&!flg_tecla) {
@@ -545,7 +558,6 @@ void Config (void) {
 
         if(tecla.tiempo>30) {      //Si mantengo presionado el Encoder mas de 3 seg
             tecla.cual=nada;
-            //i_tiempotecla=0;
             tecla.procesado=1;
             flg_turnoff=1;
             ChangeState(state_StandBy);
@@ -557,7 +569,6 @@ void Config (void) {
         if((tecla.cual==BT_Encoder)&&(tecla.tiempo<20)) {      //Habï¿½a apretado el encoder
                            //Estaba encendido
             tecla.procesado=1;
-            //i_tiempotecla=0;        //Reinicio tiempo tecla
             tecla.cual=nada;
             if(flg_muestro==Temp_Set) {
                 flg_muestro=Tiempo_Seteado;
@@ -565,8 +576,6 @@ void Config (void) {
                 ChangeState(state_Process);     //Comienza a calentar
             }
         }
-
-        //********************************************Agregar funcionamiento de tecla cancel
 
         if((tecla.cual==BT_Cancel)&&(tecla.tiempo<20)) {      //Habï¿½a apretado el cancel
             if(flg_muestro==Tiempo_Seteado) {       //Si estaba mostrando el tiempo para configurar
@@ -582,13 +591,15 @@ void Config (void) {
             tecla.cual=nada;
             tecla.procesado=1;
         }
-
-        //********************************************
-
-        i_tiempotecla=0;        //Reinicio tiempo tecla
     }
 }
 
+
+//******************************************************************************
+//                     Process State routine
+//
+//Handles Heating process
+//******************************************************************************
 void Process (void) {
 
     if(tecla.tiempo&&!tecla.estado) {        //Si suelto el pulsador
@@ -620,10 +631,14 @@ void Process (void) {
         tecla.cual=nada;
     }
 
+    
+    //*******************************PID callback every 10 seconds
     if(calentar.ui_PIDrefresh>PID_TIME){           //Cada (PID_TIME/10) (10) segundos 
-        
+        calentar.ui_PIDrefresh=0;
         PID();
-        
+
+#ifdef POWER_OUTPUT_C
+        //******************* Peltier element, HeatsUp or CoolsDown according to PID_calc.result
         if(PID_calc.result>=0) {            //if PID_Calc Result is positive, heats up
             l_PeltierAux=(int) PID_calc.result;
             if(l_PeltierAux>0xFFFF) Peltier_HowMuch=0xFFFF;
@@ -635,12 +650,10 @@ void Process (void) {
             else Peltier_HowMuch=l_PeltierAux;
             CoolDown(Peltier_HowMuch);
         }
+#endif
         
-        calentar.ui_PIDrefresh=0;
         if(VARIOS_flgs.SmartPID) SmartPID();
-        
     }
-    
 }
 
 
@@ -662,46 +675,47 @@ void ChangeState (int change) {
 //*****************************************************************************
 // Estado de StandBy
         case state_StandBy:
-        //if(uc_estado==state_StandBy){           //Estaba en StandBy
-                if(change==state_Config){           //y se enciende
+            if(change==state_Config){           //y se enciende
+#ifdef POWER_OUTPUT_C
                     PeltierOff();
-                    MainOutput=0;      //Apago salida
-                    i_aux=24000/4;
-                    CCP2PR=i_aux;
-                    CCP2RB=i_aux/2;
-                    //printf("StdBy -> Config\n\r");
-                    //LED_Temp_SetHigh();
-                    BUS595_data.LED_TempSet=1;
-                    //uc_BT=nada;                 //Borro el hecho de que estaba presionado
-                    i_tiempotecla=0;
-                    BUZZER.Beeptype=singleLong;               //Emito un pitido largo
-                    calentar.tempSet=TempDefault.i;    //Temperatura seteada por defecto
-                    calentar.enableOutput=0;                   //Por defecto NO estï¿½ calentando
-                    flg_muestro=Temp_Set;       //por defecto muestra temperatura
-                    calentar.timeSet=TimeDefault.i;    //Tiempo seteado por defecto
-                    flg_StdBy=0;                //Y enciendo
-                    TMR2_Start();
-                    TMR3_Stop();                //Detengo timer 3, de dimerizado RT
-                    flg_dimin=1;                //Dimerizo nï¿½meros en startup
-                    flg_turnoff=1;
-                    uc_estado=state_Config;     //cambio de estado
-                    if(uc_error==ERROR_TURN_ON) uc_error=0;
-                }
-
-            //}
+#endif
+                MainOutput=0;      //Apago salida
+                i_aux=24000/4;
+                CCP2PR=i_aux;
+                CCP2RB=i_aux/2;
+                //printf("StdBy -> Config\n\r");
+                //LED_Temp_SetHigh();
+                BUS595_data.LED_TempSet=1;
+                //uc_BT=nada;                 //Borro el hecho de que estaba presionado
+                i_tiempotecla=0;
+                BUZZER.Beeptype=singleLong;               //Emito un pitido largo
+                calentar.tempSet=TempDefault.i;    //Temperatura seteada por defecto
+                calentar.enableOutput=0;                   //Por defecto NO estï¿½ calentando
+                flg_muestro=Temp_Set;       //por defecto muestra temperatura
+                calentar.timeSet=TimeDefault.i;    //Tiempo seteado por defecto
+                flg_StdBy=0;                //Y enciendo
+                TMR2_Start();
+                TMR3_Stop();                //Detengo timer 3, de dimerizado RT
+                flg_dimin=1;                //Dimerizo nï¿½meros en startup
+                flg_turnoff=1;
+                uc_estado=state_Config;     //cambio de estado
+                if(uc_error==ERROR_TURN_ON) uc_error=0;
+            }
             break;
 //*****************************************************************************
 // Estado de Config
         case state_Config:                  //Estaba configurando el equipo
 
             if(change==state_Process) {     //Y el nuevo estado es calentar
-                
-                /*if( (int) f_temp > calentar.tempSet) {              //La temperatura actual es mayor que la seteada
+
+#ifndef POWER_OUTPUT_C          
+                if( (int) f_temp > calentar.tempSet) {              //La temperatura actual es mayor que la seteada
                     calentar.flg_inicioArriba=1;            //activo flag de InicioArriba para funcionamiento
                 } else {
                     calentar.flg_inicioArriba=0;
-                }*/
-                
+                }
+#endif
+
                 if(calentar.timeSet>0) {                    //There's a timeout set
                     calentar.timeLeft=calentar.timeSet-1;     //Copy the value to the countdown timer
                     calentar.flg_timer=1;                   //Set the timer flag, so the oven knows it has to countdown
@@ -732,8 +746,9 @@ void ChangeState (int change) {
                         
                 smartPID.f_peakMaxRising=0;         //starts with a null value to be easily overwritten
                 smartPID.f_peakMaxFalling=5000;     //starts with a very high value to be easily overwritten
-                
-                /*if(calentar.flg_inicioArriba) {     //if process starts with current temp above set temp.
+
+#ifndef POWER_OUTPUT_C                
+                if(calentar.flg_inicioArriba) {     //if process starts with current temp above set temp.
                     smartPID.flg_checkReach=0;          //Check reach is null, because it is above current temp.
                     smartPID.flg_rising=0;              //starts falling, since current temp. is above set temp.
                     PID_calc.error=f_temp - (float) calentar.tempSet;         //computes init error
@@ -743,11 +758,11 @@ void ChangeState (int change) {
                     smartPID.flg_rising=1;              //starts below set temp, so it will start to heat up, it'll be rising.
                     PID_calc.error=(float) calentar.tempSet - f_temp;         //computes init error
                     //PID_calc.error*=10;
-                }*/
+                }
                 //**********************************
                 
                 //****************Precalentamiento
-                /*if(!calentar.flg_inicioArriba) {        //Starts heating with current temperature below set temp.
+                if(!calentar.flg_inicioArriba) {        //Starts heating with current temperature below set temp.
                     if(VARIOS_flgs.WrmpUP) { 
                         warmup.ul_timer=calentar.tempSet-f_temp;
                         warmup.ul_timer*=f_warmupK;//warmup_K;
@@ -763,11 +778,9 @@ void ChangeState (int change) {
                         PID_calc.I_term*=f_aux;                         //divided by temperature difference. If temp difference is 2 degrees, i_term=I_TermMax/4
                         if(PID_calc.I_term>PID_calc.I_termMAX) PID_calc.I_term=PID_calc.I_termMAX;
                     }
-                }*/
+                }
+#endif
                 //*********************************
-                //uc_BT=nada;                 //Borro el hecho de que estaba presionado
-                //i_tiempotecla=0;
-                //flg_buzzer=1;               //Emito un pitido
                 calentar.flg_llego=0;               //It hasn't reached temperature yet. That's later to define
                 calentar.enableOutput=1;                   //Enable output (Output power will depend on PID calculations)
                 calentar.ul_processCount=0;                 //Overall process second counter
@@ -775,14 +788,14 @@ void ChangeState (int change) {
                 else flg_muestro=Tiempo_Restante;   //Caso contrario, se muestra el tiempo restante
                 uc_estado=change;
             }
-            else if(change==state_PIDAT){
+            else if(change==state_PIDAT){           //New State is PID Autotuning
                 PIDAT.f_tempPIDlast=f_temp;
                 PIDAT.ui_outpercent=PIDAT_Output;
-                
+#ifdef POWER_OUTPUT_C
                 Peltier_HowMuch=CCP2PR/10;
                 Peltier_HowMuch*=PIDAT_Output;
                 HeatUp(Peltier_HowMuch);
-                
+#endif
                 PIDAT.ui_tiempo_actual=0;
                 PIDAT.flg_slope=0;
                 PIDAT.ui_secCount=0;
@@ -798,7 +811,7 @@ void ChangeState (int change) {
             //*************************************************
             //Cambio a TwoPointCal
             //*************************************************
-            else if(change==state_TwoPointCal){
+            else if(change==state_TwoPointCal){             //TwoPoint Calibration 
                 calibration.flg_calibrate=1;        // Estï¿½ calibrando temperatura
                 calibration.flg_1er=1;              //El dato que llegue va a ser el primero
                 calibration.flg_newData=0;
@@ -833,7 +846,9 @@ void ChangeState (int change) {
             //El nuevo estado es StandBy, o hubo un error
             //*************************************************
             } else {                      //
+#ifdef POWER_OUTPUT_C                
                 PeltierOff();
+#endif
                 uc_estado=state_StandBy;
                 MainOutput=0;      //Apago salida
                 //printf("Config -> StandBy\n\r");
@@ -860,7 +875,9 @@ void ChangeState (int change) {
         case state_Process:
         //else if(uc_estado==state_Process) {           //Si estaba calentando
             if(change==state_Config) {              //Y terminï¿½, o se cancelï¿½
+#ifdef POWER_OUTPUT_C
                 PeltierOff();
+#endif
                 //printf("Process -> Config\n\r");
                 MainOutput=0;
                 calibration.flg_CalHeat=0;
@@ -868,7 +885,6 @@ void ChangeState (int change) {
                 calentar.flg_ONPID=0;
                 
                 BUS595_data.LED_TempSet=1;
-                //uc_BT=nada;                 //Borro el hecho de que estaba presionado
                 i_tiempotecla=0;
                 flg_abort=0;
                 calentar.flg_timer=0;
@@ -882,7 +898,9 @@ void ChangeState (int change) {
                 TMR3_Stop();                //Detengo timer 3, de dimerizado RT
                 uc_estado=change;     //cambio de estado
             } else {                //hubo un error de cambio
+#ifdef POWER_OUTPUT_C
                 PeltierOff();
+#endif
                 MainOutput=0;
                 uc_estado=state_StandBy;
                 LED_Cancel_SetLow();
@@ -901,7 +919,9 @@ void ChangeState (int change) {
 //*****************************************************************************
 // Estado de PIDAT
         case state_PIDAT:                   //Estaba haciendo un AutoTuning
+#ifdef POWER_OUTPUT_C
             PeltierOff();
+#endif
             MainOutput=0;
             //LED_Temp_SetHigh();
             BUS595_data.LED_TempSet=1;
@@ -925,7 +945,9 @@ void ChangeState (int change) {
 //*****************************************************************************
 // Estado de TwoPointCal
         case state_TwoPointCal:             //Estaba haciendo calibración de 2 puntos
+#ifdef POWER_OUTPUT_C
             PeltierOff();
+#endif
             MainOutput=0;
             BUS595_data.LED_TempSet=1;
             //uc_BT=nada;                 //Borro el hecho de que estaba presionado
@@ -949,7 +971,9 @@ void ChangeState (int change) {
 //*****************************************************************************
 // Estado de MultiPoint Calibration
         case state_MultiPointCal:               //Was doing MultiPoint Calibration
+#ifdef POWER_OUTPUT_C
             PeltierOff();
+#endif
             MainOutput=0;      //Apago salida
             BUS595_data.LED_TempSet=1;
             //uc_BT=nada;                 //Borro el hecho de que estaba presionado
@@ -975,7 +999,9 @@ void ChangeState (int change) {
         //else {                //Se ingresï¿½ por error, manda a StandBy
         default:
             MainOutput=0;
+#ifdef POWER_OUTPUT_C
             PeltierOff();
+#endif
             uc_estado=state_StandBy;
         //}
             break;
@@ -984,15 +1010,23 @@ void ChangeState (int change) {
 
 }
 
+
+//******************************************************************************
+//                     Timer 1 CallBack routine
+//
+//Timing for 100 ms mark
+//******************************************************************************
 void TMR1_CallBack(void){       //100ms - Base temporal
 
-    if(ui_USBinitDelay<2000) ui_USBinitDelay++;
+    if(ui_USBinitDelay<2000) ui_USBinitDelay++;         //USB Init delay
 
-    //*************** Estï¿½ calentando
-    if(uc_estado==state_Process) {
+    //*************** Checks current state 
+    
+    //If it's heating and regulating temperature
+    if(uc_estado==state_Process) {                  
         
         calentar.uc_process1sec++;
-        if(calentar.uc_process1sec>9) {          //Pasï¿½ un segundo
+        if(calentar.uc_process1sec>9) {          //One second passed
             calentar.ul_processCount++;         //total seconds since oven starts to heat
             //ul_reachCount++;
             smartPID.ui_SPIDcounter++;              
@@ -1015,6 +1049,7 @@ void TMR1_CallBack(void){       //100ms - Base temporal
                 smartPID.ul_errorAvg+=(int) PID_calc.error;          //stores a quarter of the error
             }
             
+            //Timeleft Check
             if(calentar.flg_llego&&calentar.flg_timer) {            //If oven has arrived at the desired temperature
                 calentar.cuentaminuto++;                            //A second has elapsed
                 if(calentar.cuentaminuto>59) {                      //1 minute elapsed
@@ -1043,30 +1078,8 @@ void TMR1_CallBack(void){       //100ms - Base temporal
                 }
             }
         }
-        //*************************************************************************
-        //             Controlo si se terminï¿½ el temporizador
-        /*if(calentar.flg_timer&&calentar.enableOutput&&!calentar.timeLeft) {        //Configuraron tiempo, y terminï¿½
-            uc_buzzer=shortAndLong;
-            //calentar.cuentaminuto++;
-            //if(calentar.cuentaminuto>15) {
-                flg_buzzer=0;
-                //calentar.cuentaminuto=0;
-                calentar.enableOutput=0;
-                ChangeState(state_Config);
-                flg_muestro=Temp_Set;
-            //}
-        }*/
-
-        //*************************************************************************
         
-        /*if(i_timeLeft&&calentar.flg_llego){    //Si queda tiempo por descontar y estï¿½ a temperatura estable
-            calentar.i_cuentaminuto++;
-            if(calentar.i_cuentaminuto>60){      //Pasï¿½ un minuto
-                i_timeLeft--;
-                calentar.i_cuentaminuto=0;
-            }
-        }*/
-        
+        //*************************************************************************
         
         calentar.ui_PIDrefresh++;
         if(warmup.flg) {
@@ -1092,11 +1105,10 @@ void TMR1_CallBack(void){       //100ms - Base temporal
             else {
                 calentar.flg_ONPID=0;
             }
-           
         }
-        
+    }    
     //**************************************PID AutoTuning timing
-    } else if(uc_estado==state_PIDAT) {
+    else if(uc_estado==state_PIDAT) {
         if(PIDAT.ui_1sec<PIDAT_Output) PIDAT.flg_ONPID=1;
         else PIDAT.flg_ONPID=0;
 
@@ -1112,9 +1124,36 @@ void TMR1_CallBack(void){       //100ms - Base temporal
             PIDAT.flg_1sec=1;                       //There's new data for calculations in PIDAT     
             PIDAT.ui_secCount=0;
         }
+    }  
+    //State -> Temperature Calibration state
+    else if(uc_estado==state_TwoPointCal||uc_estado==state_MultiPointCal) {
+        if(calibration.ui_PreHeatTimeout){      //Precalentar (calienta durante un tiempo inical
+#ifdef POWER_OUTPUT_C
+                Peltier_HowMuch=0xFFFF;
+                HeatUp(Peltier_HowMuch);
+#endif
+                calibration.ui_PreHeatTimeout--;    // al 100% para lograr una temperatura alta
+                calibration.flg_CalHeat=1;          // en poco tiempo).
+            } else {                    //********************** Una vez pasado el tiempo de precalentar
+#ifdef POWER_OUTPUT_C
+                Peltier_HowMuch=6553;           //0xFFFF/10
+                Peltier_HowMuch*=TwoPointCal_Output;         //Calienta al TwoPointCal_Output% (20%)
+                HeatUp(Peltier_HowMuch);
+#else 
+                if(calibration.uc_CalHeatTimer) {   
+                    calibration.uc_CalHeatTimer--;  // continua calentando al 10% de la potencia
+                    calibration.flg_CalHeat=0;
+                } else {
+                    calibration.uc_CalHeatTimer=TwoPointCal_Output;      //Calienta al 1/(N+1) % (N=4 -> 20%)
+                    calibration.flg_CalHeat=1;          //Indica que se encienda la resistencia
+                    //flg_dataB=1;            //Vuelve a pedir Data B, por las dudas
+                } 
+#endif
+                //*********************
+            }
     }
+    //******************************************************END of state timing
 
-    if(flg_tempTx) uc_USBCounter++;
     //************************************************************************
     //          Ignoro pulsaciï¿½n durante el cambio de estado
     if(flg_turnoff) {               //Si estoy cambiando de estado
@@ -1157,61 +1196,40 @@ void TMR1_CallBack(void){       //100ms - Base temporal
 
         //********************Chequeo que pulsador presionï¿½
     //if(ADC1_IsConversionComplete())
-    //ADC_CallBack();            //Leo ADC para ver estado de pulsadores
 
-    if(!Bt_Cancel_GetValue()){//(Bt_Rt>BT_Mid-100)&&(Bt_Rt<BT_Mid+100)){         //Pulsa Cancel
+    //*****************Cancel Button pressed
+    if(!Bt_Cancel_GetValue()){           //Pulsa Cancel
         if(!tecla.estado&&!flg_StdBy){ //Si es la primera vez q presiono
             LED_Cancel_SetLow();    //destello de apagado para indicar que se detectï¿½ la tecla
             BUZZER.Beeptype=singleBeep;           //y emito un pitido
         }
-        //uc_BT=BT_Cancel;                //determino que tecla presionï¿½
-
         tecla.cual=BT_Cancel;
         tecla.estado=1;                //Asiento que se estï¿½ presionando una tecla
         tecla.tiempo++;
-        //i_tiempotecla++;            //Y comienzo a contar tiempo
     }
-    else if(!Bt_Sw_GetValue()){//Bt_Rt<100) {                              //Pulsa Encoder
+    //*************Rotary encoder Switch pressed
+    else if(!Bt_Sw_GetValue()){                              //Pulsa Encoder
         if(!tecla.estado&&!flg_StdBy) BUZZER.Beeptype=singleBeep;            //emito un pitido para indicar que se detectï¿½ la pulsaciï¿½n
         tecla.cual=BT_Encoder;           //Registro que se trata del encoder
         tecla.estado=1;                //Asiento que se presionï¿½ una tecla
         tecla.tiempo++;            //Y comienzo a contar cuï¿½nto tiempo lleva presionada
-    /*} else if((Bt_Other>BT_Mid-100)&&(Bt_Other<BT_Mid+100)){       //Pulsa botï¿½n motor
-        if(!tecla.estado&&!flg_StdBy) {
-            LED_Luz_SetLow();
-            flg_buzzer=1;
-        }
-        tecla.cual=BT_Motor;
-        tecla.estado=1;
-        tecla.tiempo++;
-    } else if((Bt_Other<100)){                              //Pulsa botï¿½n luz
-        if(!tecla.estado&&!flg_StdBy) {
-            LED_Motor_SetLow();
-            flg_buzzer=1;
-        }
-        tecla.cual=BT_Luz;
-        tecla.estado=1;
-        tecla.tiempo++;*/
-    } else if(!Bt_Luz_GetValue()){//(Bt_Rt>BT_Mid-100)&&(Bt_Rt<BT_Mid+100)){         //Pulsa Cancel
+    } 
+    //*************** Light Switch pressed
+    else if(!Bt_Luz_GetValue()){         //Pulsa Cancel
         if(!tecla.estado&&!flg_StdBy){ //Si es la primera vez q presiono
             LED_Luz_SetLow();    //destello de apagado para indicar que se detectï¿½ la tecla
             BUZZER.Beeptype=singleBeep;           //y emito un pitido
             luz.flg_timeout=1;
             luz.ui_timeout=100;
         }
-        //uc_BT=BT_Cancel;                //determino que tecla presionï¿½
-
         tecla.cual=BT_Luz;
         tecla.estado=1;                //Asiento que se estï¿½ presionando una tecla
         tecla.tiempo++;
-        //i_tiempotecla++;            //Y comienzo a contar tiempo
-    } else {
+    } 
+    //**************** Nothing pressed, so, switch is released (whichever it was)
+    else {
         tecla.estado=0;                //Registro que se soltï¿½ la tecla Cancel o Encoder
     }
-        //uc_BT=nada;
-        //i_tiempotecla=0;
-
-
 
     if(!tecla.estado && tecla.procesado) {        //Si soltï¿½ el pulsador y ya se procesï¿½ la tecla
         tecla.cual=nada;
@@ -1225,6 +1243,9 @@ void TMR1_CallBack(void){       //100ms - Base temporal
 
     //********************Chequeo que pulsador presionï¿½ - FIN *****************
 
+    
+    //*************************************************************************
+    //RGB LED status
     if(uc_error!=0) {           //Hay un error, RGB muestra color ROJO
         led.r=Rojo_R;
         led.g=Rojo_G;
@@ -1297,7 +1318,8 @@ void TMR1_CallBack(void){       //100ms - Base temporal
     ws2812_send(&led);
     ws2812_send(&led2);
     ws2812_send(&led3);
-    
+    //FIN RGB LEDs status
+    //*************************************************************************
 
     //*************************************************************************
     // Hago sonar el buzzer segï¿½n la accion que corresponda
@@ -1371,19 +1393,11 @@ void TMR1_CallBack(void){       //100ms - Base temporal
             BUZZER_OFF;
             BUZZER.flg=0;
         }
-        //ui_BZ_counter++;
     }
 
-    /*if(flg_buzzer) {                //Si se presionï¿½ alguna tecla
-        //if(!flg_StdBy) Buzzer_SetHigh();           //Hago un pitido
-        if(flg_buzzer>1) flg_buzzer=0; //De 0.2 seg aprox
-        else flg_buzzer++;
-
-    } else {
-        //Buzzer_SetLow();            //Y luego lo silencio
-    }*/
     //*************************************************************************
 
+    //******************************* Light Timeout
     if(luz.ui_timeout) {    //Presionï¿½ pulsador de luz, enciende durante 10 seg.
         luz.ui_timeout--;
     } else {
@@ -1391,6 +1405,7 @@ void TMR1_CallBack(void){       //100ms - Base temporal
     }
     //*************************************************************************
 
+    //***********************Debug messages. USB
     if(flg_debug){
         uc_debug++;
         if(uc_debug>9){
@@ -1399,37 +1414,25 @@ void TMR1_CallBack(void){       //100ms - Base temporal
                 f_temp,calentar.tempSet,calentar.timeSet,calentar.timeLeft,calentar.ul_processCount, uc_estado);
             flg_send2=1;
         }
+#ifdef POWER_OUTPUT_C
         if(uc_debug==5) {
             sprintf(st_UART2,"***DD:%d_A:%d____B:0x%X/0x%X____C:0x%X_D:%X\n\r",
                 CoolDown_EN,HeatUp_EN,CoolingPWM,HeatingPWM,Peltier_HowMuch,(int) PID_calc.result);
             flg_send2=1;
         }
+#endif 
     }
-
-    //Estado = Calibraciï¿½n de dos puntos.
-    if(uc_estado==state_TwoPointCal||uc_estado==state_MultiPointCal) {
-        if(calibration.ui_PreHeatTimeout){      //Precalentar (calienta durante un tiempo inical
-                Peltier_HowMuch=0xFFFF;
-                HeatUp(Peltier_HowMuch);
-                calibration.ui_PreHeatTimeout--;    // al 100% para lograr una temperatura alta
-                calibration.flg_CalHeat=1;          // en poco tiempo).
-            } else {                    //********************** Una vez pasado el tiempo de precalentar
-                Peltier_HowMuch=6553;           //0xFFFF/10
-                Peltier_HowMuch*=TwoPointCal_Output;         //Calienta al TwoPointCal_Output% (20%)
-                HeatUp(Peltier_HowMuch);
-                /*if(calibration.uc_CalHeatTimer) {   
-                    calibration.uc_CalHeatTimer--;  // continua calentando al 10% de la potencia
-                    calibration.flg_CalHeat=0;
-                } else {
-                    calibration.uc_CalHeatTimer=TwoPointCal_Output;      //Calienta al 1/(N+1) % (N=4 -> 20%)
-                    calibration.flg_CalHeat=1;          //Indica que se encienda la resistencia
-                    //flg_dataB=1;            //Vuelve a pedir Data B, por las dudas
-                } */                      //*********************
-            }
-    }
+    //**************************************************************************
+    
+    
 
 }
 
+//******************************************************************************
+//                     Timer 1 CallBack routine
+//
+//Timing for 1 ms mark. Mostly to refresh digits and output
+//******************************************************************************
 void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
 
     operationFlgs.readADC=1;        //Leo MCP
@@ -1439,6 +1442,7 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
     else LightOutput=0;
     //*************************************************************************
 
+    //************** Toggle TRIAC if output is Set
     if(calentar.flg_ONPID || PIDAT.flg_ONPID) MainOutput=~MainOutput;
     else MainOutput=0;
         
@@ -1462,7 +1466,7 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
     //**************************************************************************
 
     //*************************************************************************
-    //Registro de giro del encoder
+    //Rotary encoder check
     if(uc_estado==state_Config){//!flg_StdBy && !flg_go) {        //Si NO estï¿½ en Stand By y que NO estï¿½ calentando
         if(!Sw_A_GetValue()){    //Veo el estado del encoder
             if(tecla.flg_encoder) {       //control antirebote
@@ -1509,27 +1513,29 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
     }
     //*************************************************************************
 
+    //********************What to show on screen
     TEMP_SET_Led=0;
     TIME_Led=0;
-    if(flg_muestro==Temp_Set){
+    //Auxiliary value to show
+    if(flg_muestro==Temp_Set){              //Shows Set Temperature
         TEMP_SET_Led=1;
         if(calentar.tempSet<0) i_aux=-1*calentar.tempSet;
         else i_aux=calentar.tempSet;
-    } else if(flg_muestro==Tiempo_Restante) {
+    } else if(flg_muestro==Tiempo_Restante) {       //Shows remaining time
         TIME_Led=1;
         i_aux=calentar.timeLeft;
-    } else if(flg_muestro==Tiempo_Seteado) {
+    } else if(flg_muestro==Tiempo_Seteado) {        //Shows Set time
         TIME_Led=1;
         i_aux=calentar.timeSet;
     }
 
-    if(!flg_abort) {
-        if(flg_muestro==nada) {
+    if(!flg_abort) {        //If not in "abort" display
+        if(flg_muestro==nada) {     //if set to show nothing
             uc_uni2=nada;
             uc_dec2=nada;
             uc_cen2=nada;
             uc_mil2=nada;
-        } else {
+        } else {                //else, shows auxiliary value 
             Process_number(i_aux);
             uc_uni2=uc_uni;
             uc_dec2=uc_dec;
@@ -1537,25 +1543,25 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
             uc_mil2=uc_mil;
         }
 
-        if(calibration.flg_calibrate || (uc_estado==state_PIDAT)) {
-            uc_mil2=letra_c;
+        if(calibration.flg_calibrate || (uc_estado==state_PIDAT)) {     //If in some calibration mode
+            uc_mil2=letra_c;                                            //Show "Cal."
             uc_cen2=letra_a;
             uc_dec2=letra_l;
             uc_uni2=nada;
         }
         
-        if(f_temp<0) {
-            i_aux=-1*f_temp;
-            flg_tempNeg=1;
+        if(f_temp<0) {                  //If temperature is negative
+            i_aux=-1*f_temp;            //Computes absolute value
+            flg_tempNeg=1;              //And sets negative sign to display
         }
         else {
             i_aux=f_temp;
             flg_tempNeg=0;
         }
 
-        Process_number(i_aux);
+        Process_number(i_aux);          //Process number to display in main set
         
-    } else{
+    } else{             //If abort, then display "Cancelar"
         uc_mil2=letra_c;
         uc_cen2=letra_a;
         uc_dec2=letra_n;
@@ -1567,6 +1573,7 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
     }
 
     clear_digits();           //Turns of digits
+    //*************** Digit sweep
     switch(uc_digito) {
         case 0:
             dig_1;
@@ -1603,8 +1610,9 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
     }
     uc_digito++;
     if(uc_digito>3) uc_digito=0;
+    //*********************
 
-
+    //*******************if dimming digits
     if(dim>dimer) {                     //Dimerizo numeros en encendido o apagado
         if(flg_dimin||flg_dimout) {
             BUS595_data.D1=0;                //porciï¿½n de tiempo con nï¿½meros apagados
@@ -1634,20 +1642,20 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
         }
         uc_dimup=0;
     }
+    //**************************************************************************
 
-
-    //if(flg_debug) {
+    //If Output is set, turn Rotary LEDs ON
     if(MainOutput){
         LEDs_Rt_SetHigh();
         LEDs_Rt2_SetHigh();
         LEDs_Rt3_SetHigh();
         LEDs_Rt4_SetHigh();
     }
-    //}
 
+    //*****************************Test timeout is set -> light up everything
     if(ui_test) {
         ui_test--;
-        
+
         LEDs_Rt_SetHigh();
         LEDs_Rt2_SetHigh();
         LEDs_Rt3_SetHigh();
@@ -1668,9 +1676,9 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
         Refresh_SetHigh();
         Delayms(100);
         Refresh_SetLow();
-    } else if((!flg_StdBy)||flg_dimout) {
+    } else if((!flg_StdBy)||flg_dimout) {           //Not in Stand By, display what is supposed to
         Refresh_digits();
-    } else {
+    } else {                            //Else, is in stand By, or dimming, displays nothing
         SPI1BUF=nada;
         while(SPI1STATbits.SPIBUSY){};
         SPI1BUF=nada;
@@ -1685,6 +1693,8 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
         Refresh_SetLow();
     }
 
+    
+    //*******************************Internal datalog download data
     if(datalog.download&&datalog.next) {              //Si recibí comando para descargar datos
         if(datalog.pointer2<datalog.pointer){
             if(!datalog.flg_send) {         //Y ya envió un dato
@@ -1695,16 +1705,22 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
                 datalog.next=0;
             }
         } else {
-            if(!datalog.flg_send) {
-                sprintf(st_download,"ENDofFILE\n\r");
+            if(!datalog.flg_send) {         // No more data to send
+                sprintf(st_download,"ENDofFILE\n\r");           //ENDofFile
                 datalog.flg_send=1;
                 datalog.download=0;
                 datalog.next=0;
             }
         }
     }
+    //**************************************************************************
 }
 
+//******************************************************************************
+//                     Timer 3 CallBack routine
+//
+//Timing for 50 us mark for dimming
+//******************************************************************************
 void TMR3_CallBack(void) {              //50us para dimerizado de RT
 
     if(BUZZER.counter<30){
@@ -1716,7 +1732,7 @@ void TMR3_CallBack(void) {              //50us para dimerizado de RT
     }
 
 
-    if(flg_StdBy) {
+    if(flg_StdBy) {         //if in standBy -> pulse rotary LEDs
         if(uc_dimRT<uc_dimtopRT) {
             LEDs_Rt_SetHigh();
             LEDs_Rt2_SetHigh();
@@ -1759,11 +1775,22 @@ void TMR3_CallBack(void) {              //50us para dimerizado de RT
     }
 }
 
+//******************************************************************************
+//                     Short Delay routine
+//
+//
+//******************************************************************************
 void Delayms(int tiempo){           //Funciï¿½n de delay
     int counter;
     for(counter=0;counter<tiempo;counter++){
     }
 }
+
+//******************************************************************************
+//                     ADC CallBack routine
+//
+//
+//******************************************************************************
 
 void ADC_CallBack(void){            //Lee ADC para ver estado de pulsadores
     /*ADC1_ConversionResultBufferGet(i_adcBuf);
@@ -1783,9 +1810,14 @@ void ADC_CallBack(void){            //Lee ADC para ver estado de pulsadores
     //Bt_Rt=ADC1BUF10;
     //Bt_Other=ADC1BUF9;
 
-    ADC1_Start();
+    //ADC1_Start();
 }
 
+//******************************************************************************
+//                     Process number routine
+//
+//Processes number and decodes it to display on the 7segment digits
+//******************************************************************************
 void Process_number(int num) {          //Separa los dï¿½gitos y los procesa a 7 segmentos
 	uc_mil=num/1000;
 	uc_cen=num/100;
@@ -1801,6 +1833,11 @@ void Process_number(int num) {          //Separa los dï¿½gitos y los procesa a 7
 	uc_uni=Decode_7seg(uc_uni);
 }
 
+//******************************************************************************
+//                     Decoding from number to 7 segment routine
+//
+//
+//******************************************************************************
 char Decode_7seg(char num) { //Decodifica un dï¿½gito de decimal a 7segmentos
 
 	char c_return=0;
@@ -1844,6 +1881,13 @@ char Decode_7seg(char num) { //Decodifica un dï¿½gito de decimal a 7segmentos
 	return c_return;
 }
 
+
+//******************************************************************************
+//                     Refresh digits routine
+//
+//
+//******************************************************************************
+
 void Refresh_digits(void) {         //Refresco estado del bus 595
 
 	SPI1BUF=BUS595_data.uc_595[0];
@@ -1861,6 +1905,12 @@ void Refresh_digits(void) {         //Refresco estado del bus 595
 
 }
 
+//******************************************************************************
+//                     Rotate LEDs routine
+//
+//Rotates clockwise or counter-clockwise the LEDs following the rotation of
+//the rotary encoder.
+//******************************************************************************
 void Rotate_LEDs (unsigned char sentido) {      //Hace girar los leds del encoder
     switch(uc_sequence){
         case 0:
@@ -1899,7 +1949,12 @@ void Rotate_LEDs (unsigned char sentido) {      //Hace girar los leds del encode
     }
 }
 
-//********************Calculo de tiempo de calentado
+
+//******************************************************************************
+//                     PID routine
+//
+//Computes how much power to deliver to the heating (or peltier) element
+//******************************************************************************
 void PID(void) {
     //Del PDF de autotuning: Output (%) = (100/Kp) * (e + SUM(e)/Ki + delta(e)*Kd)
 
@@ -1948,7 +2003,9 @@ void PID(void) {
     PID_calc.result*=PID_TIME;
     //PID_calc.result/=100;    //resultado del PID en 0,001s de tiempo de encendido
 
-    //if(PID_calc.result<0) PID_calc.result=0;
+#ifndef POWER_OUTPUT_C
+    if(PID_calc.result<0) PID_calc.result=0;
+#endif     
 }
 
 //*****************************************************************************
@@ -2068,25 +2125,30 @@ void Check_EEPROM(void) {
         VARIOS_flgs.Dterm=0;
         
 #ifdef POWER_OUTPUT_A                           //If is a 100W oven, then disable Safeguard as default
-        
         VARIOS_flgs.SafeGuard=0;
-#else                                           //If it's 1kW oven, enable Safeguard as default
+        VARIOS_flgs.SmartPID=1;
+        VARIOS_flgs.WrmpUP=1;
+#endif
+    
+#ifdef POWER_OUTPUT_B                           //If it's 1kW oven, enable Safeguard as default
         VARIOS_flgs.SafeGuard=1;
+        VARIOS_flgs.SmartPID=1;
+        VARIOS_flgs.WrmpUP=1;
 #endif
                 
+#ifdef POWER_OUTPUT_C                            //If it's Peltier oven
+        VARIOS_flgs.SafeGuard=0;
         VARIOS_flgs.SmartPID=0;
         VARIOS_flgs.WrmpUP=0;
+#endif
+
         flg_EE_fault=DEE_Write(EEPROM_VariosFlgs,VARIOS_flgs.L);
         
         
         calentar.i_SetPointMargin=50;            //0.5 degree difference marks the start of regulated regim.
         calentar.i_safelimit=30;
         flg_EE_fault=DEE_Write(EEPROM_Margin,calentar.ul_LimitAndSPMargin);
-        //flg_smartPID=1;
-        //flg_safeguard=1;
-        //flg_warmup=1;
-
-        //flg_EE_fault=DEE_Write(SerialNumber,0x0001);
+        
     }
 
     //*****************************EEPROM OK - Restauro configuraciï¿½n
@@ -2147,7 +2209,12 @@ void Write_EEPROM(unsigned long Address, unsigned long Value){
     } while(flg_EE_fault);
 };
 
-//*******************UART commands processing
+
+//******************************************************************************
+//                     UART commands processing
+//
+//
+//******************************************************************************
 void ProcessUART(void) {
 
     //sprintf(st_UART,"\n\rA: %d -",uc_RX_Pointer);
@@ -2523,6 +2590,7 @@ void ProcessUART(void) {
             sprintf(st_UART,"TDuC_v1\n\r");
             flg_send=1;
         }
+#ifdef POWER_OUTPUT_C
         //****************************************EXCLUSIVE FOR PELTIER OVENS
         //**************************************CoolDown
         else if(strstr(st_aux,"cooldown")){
@@ -2554,6 +2622,7 @@ void ProcessUART(void) {
             sprintf(st_UART,"StopPeltier");
             flg_send=1;
         }
+#endif
         //****************************************Error de comando
         else {
             sprintf(st_UART,"Comando erroneo\n\r");

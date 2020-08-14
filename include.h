@@ -170,10 +170,18 @@ inclusions, and functions declarations.
  */
 
 #define versionA    0
-#define versionB    27
+#define versionB    28
+
+//MainOutput to control heating element
+#define MainOutput  BUS595_data.OUT_AC2
+
+//Light Output controls inner light
+#define LightOutput BUS595_data.OUT_AC3
+
 
 //POWER_OUTPUT_A for 100W power oven, and POWER_OUTPUT_B for 1kW power oven
-#define POWER_OUTPUT_A
+//POWER_OUTPUT_C for Peltier oven
+#define POWER_OUTPUT_C
 
 #ifdef POWER_OUTPUT_A       //100 W Power
 
@@ -192,6 +200,16 @@ inclusions, and functions declarations.
 #define Cal_PreHeat     200         //Pre heat 20 segundos
 
 #define SModel     0x0B00
+
+#endif
+
+#ifdef POWER_OUTPUT_C           //Peltier Output
+
+#define TwoPointCal_Output  7           // 1 /(N+1)  % -> 33%
+#define PIDAT_Output    7               //70% power output during PIDAT
+#define Cal_PreHeat     600         //Pre heat 60 segundos
+
+#define SModel     0x0C00
 
 #endif
 
