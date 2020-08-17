@@ -121,8 +121,8 @@ char Config_MCP(void) {         //Configura el ADC MCP
     SPI2BUF=0x12;                   //write to reg 0x09
     while(SPI2STATbits.SPIBUSY);
     uc_sequence=SPI2BUF;
-    //Register 0x09 - Gain
-    SPI2BUF=0xAD;                   //both channels with Gain of 32
+    //Register 0x09 - Gain (1 register)
+    SPI2BUF=0xAA;                   //Channel 1 G=32 - Ch0 G=4
     while(SPI2STATbits.SPIBUSY);
     uc_sequence=SPI2BUF;
     //Status 0x0A (2 reg))
@@ -183,6 +183,7 @@ char Config_MCP(void) {         //Configura el ADC MCP
     
     Delayms(100);
     
+    //Reads register 0x09 (Gain) and compare it with written value
     while(SPI2STATbits.RXBUFELM) uc_aux=SPI2BUF;
     MCP_CS_SetLow();
     SPI2BUF=0x13;
@@ -194,7 +195,7 @@ char Config_MCP(void) {         //Configura el ADC MCP
     uc_aux=SPI2BUF;
     MCP_CS_SetHigh();
     
-    if(uc_aux!=0xAD) return -1;
+    if(uc_aux!=0xAA) return -1;
     else return 0;
 }
 

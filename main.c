@@ -1416,8 +1416,8 @@ void TMR1_CallBack(void){       //100ms - Base temporal
         }
 #ifdef POWER_OUTPUT_C
         if(uc_debug==5) {
-            sprintf(st_UART2,"***DD:%d_A:%d____B:0x%X/0x%X____C:0x%X_D:%X\n\r",
-                CoolDown_EN,HeatUp_EN,CoolingPWM,HeatingPWM,Peltier_HowMuch,(int) PID_calc.result);
+            sprintf(st_UART2,"***DD:%d_A:%d____B:0x%X/0x%X____C:0x%X_D:%X___I:%d\n\r",
+                CoolDown_EN,HeatUp_EN,CoolingPWM,HeatingPWM,Peltier_HowMuch,(int) PID_calc.result,(int) f_lm334);
             flg_send2=1;
         }
 #endif 
@@ -2111,7 +2111,7 @@ void Check_EEPROM(void) {
         Convert.C_tempFactory=Convert.C_temp;
         flg_EE_fault=DEE_Write(EEPROM_CTEMPFact,Convert.CtempFL);
         
-        Convert.K_LM334=0.000002235;
+        Convert.K_LM334=1;
         flg_EE_fault=DEE_Write(EEPROM_KLM334,Convert.KLM334L);
 
         Convert.TEMP_MAX=3000;
