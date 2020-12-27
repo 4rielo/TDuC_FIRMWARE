@@ -21,9 +21,17 @@
 inclusions, and functions declarations.
  
  @Version_control:
+ TDuC_v0.29:
+ * Calculates temperature based on physical parameters from PT100 and LM334 measurements.
+ * Adds calibration compensation (Ktemp2 and Ctemp2) to temperature calculation based on physical parameters.
+
  TDuC_v0.28:
  * Link with GitHub to start doing version control that way.
  * Merge Peltier and regular heating element code into one project, switched via defines.
+ * ADC measuring is compensated by LM334 readout. LM334 average value during 
+ calibration is stored during Calibration, and is used to compensate during each
+ ADC reading.
+ * Moved default values for startup on EEPROM wrong, to defines in this file (include.h)
  
  TDuC_v0.27:
  * Added Peltier control functionality.
@@ -170,7 +178,24 @@ inclusions, and functions declarations.
  */
 
 #define versionA    0
-#define versionB    28
+#define versionB    29
+
+#define DEFAULT_TempMax     3000                //Max temperature (300ºC)
+
+#define DEFAULT_KTEMP       0.001257//0.001098;//0.001161;//0.001206;//0.001098;//0.000916662;//0.000730519;
+#define DEFAULT_CTEMP       3029.254639//2549.830078;//2746.878174;//2900.055176;//2549.830078;//2597.403;//2664.1806089812;//
+#define DEFAULT_LM334Comp   689250//2637100
+#define DEFAULT_KTEMP2      1
+#define DEFAULT_CTEMP2      0
+
+
+#define DEFAULT_KP          0.06959//0.005487;//0.019358;//151.7;//25.9;
+#define DEFAULT_KI          0.01350//0.000123;//0.00007;//1333.432;//833.58;//189.5;
+#define DEFAULT_KD          1.255911//1.097152;//170.5;//38.76;
+
+
+#define CONVERT_A           738.63636364//147.727272727//2954.54545455//
+#define CONVERT_B           2597.4025974
 
 //MainOutput to control heating element
 #define MainOutput  BUS595_data.OUT_AC2
@@ -181,11 +206,11 @@ inclusions, and functions declarations.
 
 //POWER_OUTPUT_A for 100W power oven, and POWER_OUTPUT_B for 1kW power oven
 //POWER_OUTPUT_C for Peltier oven
-#define POWER_OUTPUT_C
+#define POWER_OUTPUT_B
 
 #ifdef POWER_OUTPUT_A       //100 W Power
 
-#define TwoPointCal_Output  7           // 1 /(N+1)  % -> 33%
+#define TwoPointCal_Output  4           // 1 /(N+1)  % -> 33%
 #define PIDAT_Output    7               //70% power output during PIDAT
 #define Cal_PreHeat     600         //Pre heat 60 segundos
 
@@ -195,9 +220,9 @@ inclusions, and functions declarations.
 
 #ifdef POWER_OUTPUT_B         // 1kW Power
 
-#define TwoPointCal_Output  9       // 1 /(N+1)  % -> 10%
+#define TwoPointCal_Output  4       // 1 /(N+1)  % -> 20%
 #define PIDAT_Output    1           //10% power output during PIDAT
-#define Cal_PreHeat     200         //Pre heat 20 segundos
+#define Cal_PreHeat     600         //Pre heat 60 segundos
 
 #define SModel     0x0B00
 
@@ -225,7 +250,7 @@ struct {
 
 unsigned long* SNPointer;
 
-//*************************Defines
+//*************************Defines          EEPROM Memory Map
 #define SerialNumber        0x1D03F000                      //parte B del número de serie (parte A es fija y depende del modelo del equipo)
 #define EEPROM_Data         SerialNumber+4//0x1D03F000              //8 bytes de secuencia de chequeo de EEPROM
 #define EEPROM_Time         EEPROM_Data+8
@@ -235,7 +260,9 @@ unsigned long* SNPointer;
 #define EEPROM_CTEMP        EEPROM_KTEMPFact+4
 #define EEPROM_CTEMPFact    EEPROM_CTEMP+4    
 #define EEPROM_KLM334       EEPROM_CTEMPFact+4
-#define EEPROM_TMAX         EEPROM_KLM334+4
+#define EEPROM_KTEMP2       EEPROM_KLM334+4
+#define EEPROM_CTEMP2       EEPROM_KTEMP2+4
+#define EEPROM_TMAX         EEPROM_CTEMP2+4
 #define EEPROM_PID_Kp       EEPROM_TMAX+4
 #define EEPROM_PID_Ki       EEPROM_PID_Kp+4
 #define EEPROM_PID_Kd       EEPROM_PID_Ki+4
@@ -425,12 +452,22 @@ struct {
     unsigned long ul_mcpA;
     unsigned long ul_mcpB;
     
+    long l_lm334A;
+    long l_lm334B;
+    
+    float lm334Acum;
+    
     float f_tempA;
     float f_tempB;
     float f_pendiente;
     float f_pendAnt;
     float f_Ktemp;
     float f_Cslope;                     //Ordenada al origen de ecuación de recta de inflexion
+    
+    float f_tempA2;                     //Temp2 calibration variables
+    float f_tempB2;
+    float f_tempA_b2;
+    float f_tempB_b2;
     
     float f_pendAcum;
     float f_CAcum;
@@ -651,15 +688,34 @@ struct {
     };
     
     union {
+        unsigned long LM334_comp;
+        unsigned char c_LM334_Comp[4];
+    };
+    
+    union {
         float K_LM334;
         unsigned char c_kLM334[4];
         unsigned long KLM334L:32;
     };
     
     union {
+        float K_temp2;
+        unsigned char c_kTemp2[4];
+        unsigned long KtempL2:32;
+    };
+    
+    union {
+        float C_temp2;
+        unsigned char c_cTemp2[4];
+        unsigned long CtempL2:32;
+    };
+    
+    union {
         unsigned int TEMP_MAX:16;
         unsigned long TempMaxL:32;
     };
+    
+    unsigned char flg_lm334:1;
     
 }Convert;
 
@@ -1003,7 +1059,7 @@ unsigned char uc_uni2, uc_dec2, uc_cen2, uc_mil2;
 unsigned char uc_adc_counter;
 unsigned char uc_sequence, uc_aux;
 
-unsigned int ui_mcpindex;
+int ui_mcpindex;
 
 int i_rotary, i_aux, i_counter, i_aux2;
 
@@ -1014,6 +1070,7 @@ int i_mcp, i_mcp2;
 int dim, dimer;
 
 float f_mcp, f_mcp2, f_temp, f_tempSet, f_lm334;
+long l_334, l_temp, l_compensation;
 
 /*union {
     float f_temp;  

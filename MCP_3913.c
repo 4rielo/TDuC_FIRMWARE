@@ -122,7 +122,7 @@ char Config_MCP(void) {         //Configura el ADC MCP
     while(SPI2STATbits.SPIBUSY);
     uc_sequence=SPI2BUF;
     //Register 0x09 - Gain (1 register)
-    SPI2BUF=0xAA;                   //Channel 1 G=32 - Ch0 G=4
+    SPI2BUF=0xA8;                   //Channel 1 G=32 - Ch0 G=1
     while(SPI2STATbits.SPIBUSY);
     uc_sequence=SPI2BUF;
     //Status 0x0A (2 reg))
@@ -195,7 +195,7 @@ char Config_MCP(void) {         //Configura el ADC MCP
     uc_aux=SPI2BUF;
     MCP_CS_SetHigh();
     
-    if(uc_aux!=0xAA) return -1;
+    if(uc_aux!=0xA8) return -1;
     else return 0;
 }
 
@@ -270,27 +270,31 @@ void Read_MCP(void) {           //Lectura ADC MCP
     
     INTERRUPT_GlobalEnable();
     
-    ui_mcpindex++;
+    ui_mcpindex--;
     ul_mcp+=i_mcp;
     ul_mcp2+=i_mcp2;
 
-    if(ui_mcpindex>1023) {
-        f_mcp=ul_mcp2>>10;//500.0;
-        f_mcp2=ul_mcp>>10;//500.0;
-        ui_mcpindex=0;
+    if(!ui_mcpindex) {
+        l_temp=ul_mcp2>>10;//f_mcp=ul_mcp2>>10;//500.0;
+        l_334=ul_mcp>>10;//f_mcp2=ul_mcp>>10;//500.0;
+        ui_mcpindex=1024;
         ul_mcp=0;
         ul_mcp2=0;
-
-        f_temp=f_mcp*Convert.K_temp;
+        
+        if(l_334) f_lm334=(float) l_temp/l_334;
+        f_lm334*=CONVERT_A;
+        f_lm334-=CONVERT_B;
+        
+        f_lm334*=Convert.K_temp2;
+        f_lm334-=Convert.C_temp2;
+        
+        l_compensation=l_334-Convert.LM334_comp;
+        if(Convert.flg_lm334) l_temp-=l_compensation;
+        
+        f_temp=l_temp*Convert.K_temp;
         f_temp-=Convert.C_temp;
         
-        f_lm334=f_mcp2*Convert.K_LM334;
         
-        /*printf("MCP: %.5f\r\n", f_mcp);
-        printf("TEMP: %.5fºC\r\n", f_temp);
-        printf("MCP_ch1: %.5f\r\n", f_mcp2);
-        printf("V_LM334: %.5fmV\r\n", f_lm334);//*/
-
     }
 
     
