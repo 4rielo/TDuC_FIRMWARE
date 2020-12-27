@@ -93,6 +93,7 @@ void Write_EEPROM(unsigned long Address, unsigned long Value);      //Writes EEP
 void Save_ConfigEEPROM(void);                   //Saves configuration parameters to EEPROM
 void Save_KPID_EEPROM(void);                    //Saves PID parameters to EEPROM
 void Save_TempCorrection_EEPROM(void);          //Saves ADC to Temperature conversion constants
+void Save_TempCorrection2_EEPROM(void);
 void Save_TempFactCorrection_EEPROM(void);      //Saves ADC to Temperature FACTORY conversion constants
 
 void ProcessUART(void);                         //Processes USB-UART commands
@@ -129,6 +130,7 @@ int32_t main(void)
     while(SPI1STATbits.SPIBUSY){};
     SPI1BUF=nada;
     while(SPI1STATbits.SPIBUSY){};
+    Delayms(1);
     Refresh_SetHigh();
     Delayms(1);
     Refresh_SetLow();
@@ -206,6 +208,7 @@ int32_t main(void)
 
     PID_TIME=99;            //Cada 10 segundos
     f_warmupK=0.25;
+    warmup.flg=0;
     smartPID.ul_overshoot_MAX=49;
     //smartPID.ul_reachTIMEOUT=999;
     calentar.timeSet=TimeDefault.i;    //Tiempo seteado por defecto
@@ -215,6 +218,8 @@ int32_t main(void)
     PID_calc.I_termMin=500;                 //Min accumulated Iterm is 50ºC
     calentar.i_safelimit=3;              //0.3 grados por debajo del lï¿½mite
    
+    Convert.flg_lm334=0;                //By default, LM334 compensation is enabled
+    
     flg_StdBy=1;                //inicia en Stand By
     uc_estado=state_StandBy;
 
@@ -254,6 +259,8 @@ int32_t main(void)
     flg_muestro=Temp_Set;
 
 
+    ui_mcpindex=1024;
+    //flg_debug=1;
     //*************************************END of POST. Start MAIN Loop
     while(1)
     {
@@ -353,11 +360,21 @@ void CalTwoPoints (void) {
         calibration.flg_newData=0;              
         if(calibration.flg_1er) {               //Is it the first data point?
             calibration.f_tempA=calibration.f_newData;      //Current temp is received data
-            calibration.ul_mcpA=f_mcp;                      //Current ADC Value
+            calibration.ul_mcpA=l_temp+l_compensation;      //Current ADC Value
+            calibration.l_lm334A=l_334;                     //LM334 value
             calibration.flg_1er=0;                          //done with first data
+            
+            calibration.f_tempA2=calibration.f_newData;         //Alternative Measurement calibration
+            calibration.f_tempA_b2=f_lm334;                     
+            
         } else {                                //Second temperature data
             calibration.f_tempB=calibration.f_newData;          //Current temp is new data
-            calibration.ul_mcpB=f_mcp;                          //Point B temp. ADC value
+            calibration.ul_mcpB=l_temp+l_compensation;          //Point B temp. ADC value
+            calibration.l_lm334B=l_334;                         //LM334 value
+            
+            calibration.f_tempB=calibration.f_newData;          //Alternative Measurement calibration
+            calibration.f_tempB_b2=f_lm334;
+            
             //*************Computes slope
             calibration.f_pendiente=calibration.f_tempB-calibration.f_tempA;            
             calibration.f_CalAux=calibration.ul_mcpB-calibration.ul_mcpA;
@@ -369,14 +386,31 @@ void CalTwoPoints (void) {
             calibration.f_CalAux=calibration.f_pendiente*calibration.ul_mcpB;
             calibration.f_Cslope=calibration.f_CalAux-calibration.f_tempB;
 
+            calibration.l_lm334A+=calibration.l_lm334B;
+            calibration.l_lm334A>>=1;               //Averages LM334 data
             //******************Prints calculated value to USB
-            sprintf(st_UART,"K:%.6f:C:%.6f",calibration.f_pendiente,calibration.f_Cslope);
+            sprintf(st_UART,"K:%.6f:C:%.6f:LM:%d",calibration.f_pendiente,calibration.f_Cslope,calibration.l_lm334A);
             flg_send=1;
             
             //*******************Stores calculated values to ADC-Conversion parameters
             Convert.C_temp=calibration.f_Cslope;
             Convert.K_temp=calibration.f_pendiente;
+            Convert.LM334_comp=calibration.l_lm334A;
 
+            //*************Computes slope for alternative measurement calibration
+            calibration.f_pendiente=calibration.f_tempB2-calibration.f_tempA2;            
+            calibration.f_CalAux=calibration.f_tempB_b2-calibration.f_tempA_b2;
+            if(calibration.f_CalAux) {
+                calibration.f_pendiente/=calibration.f_CalAux;
+            } else uc_error=ERROR_MCP;
+            
+            //***********Computes "y-intercept"
+            calibration.f_CalAux=calibration.f_pendiente*calibration.f_tempB_b2;
+            calibration.f_Cslope=calibration.f_CalAux-calibration.f_tempB2;
+            
+            Convert.C_temp2=calibration.f_Cslope;
+            Convert.K_temp2=calibration.f_pendiente;
+            
             Save_TempCorrection_EEPROM();            //Stores new data to EEPROM
 
             ChangeState(state_Config);                  //Returns to Config State
@@ -404,6 +438,11 @@ void CalMultiPoints (void) {
 
         calibration.uc_NPoints++;               //Cantidad de valores recibidos hasta el momento
 
+        f_mcp=l_temp+l_compensation;
+        
+        calibration.lm334Acum+=l_334;
+        
+        
         calibration.f_sumY+=calibration.f_newData;          //Sumatoria Y
         calibration.f_sumX+=f_mcp;              //Sumatoria X
         calibration.f_CalAux=calibration.f_newData*f_mcp;   //Cï¿½lculo Auxiliar XY
@@ -474,6 +513,8 @@ void CalMultiPoints (void) {
     }
 
     if(calibration.flg_CalEnd) {                                //End of Calibration command received.
+        
+        /*
         calibration.f_CalAux=calibration.uc_NPoints-1;              //Computes linear regression
         if(calibration.f_CalAux) {                              //Verifies that there are more than 1 point taken
             calibration.f_pendAcum/=calibration.f_CalAux;     //Promedio tradicional de Pendiente
@@ -481,8 +522,17 @@ void CalMultiPoints (void) {
         } else {
             calibration.f_pendAcum=0;
             calibration.f_CAcum=0;
-        }
+        }*/
 
+        if(calibration.uc_NPoints) {                            //prevents division by 0
+            calibration.f_pendAcum/=calibration.uc_NPoints;     //Promedio tradicional de Pendiente
+            calibration.f_CAcum/=calibration.uc_NPoints;        //Promedio tradicional de C
+            calibration.lm334Acum/=calibration.uc_NPoints;      //Averages LM334 value
+        } else {
+            calibration.f_pendAcum=0;
+            calibration.f_CAcum=0;
+        }
+                
         if(calibration.f_sumX) {                        //Cï¿½lculo por regresion lineal
             calibration.f_CalAux=calibration.uc_NPoints * calibration.f_sumX2;
             calibration.f_CalAux/=calibration.f_sumX;
@@ -503,11 +553,13 @@ void CalMultiPoints (void) {
 
         //sprintf(st_UART,"A1:%.6f-B1:%.6f\n\rA2:%.6f-B2:%.6f\n\r",f_PendAcum,f_CAcum,f_pendiente,f_Cslope);  //Pide Punto B
         //flg_send=1;
-
+        
+        
         //***************************************** Sets ADC conversion constants with calculated values
         Convert.K_temp=calibration.f_pendiente;
         Convert.C_temp=-1*calibration.f_Cslope;
 
+        Convert.LM334_comp=calibration.lm334Acum;
         //***************************************** Sets ADC conversion FACTORY constants with calculated values
         Convert.K_tempFactory=Convert.K_tempFactory;
         Convert.C_tempFactory=Convert.C_temp;
@@ -602,6 +654,8 @@ void Config (void) {
 //******************************************************************************
 void Process (void) {
 
+    
+    //*******************************************Checks Keys
     if(tecla.tiempo&&!tecla.estado) {        //Si suelto el pulsador
         if((tecla.cual==BT_Encoder)&&(tecla.tiempo<20)) {      //Habï¿½a apreatado el encoder
             tecla.procesado=1;
@@ -630,7 +684,7 @@ void Process (void) {
         tecla.procesado=1;
         tecla.cual=nada;
     }
-
+    //**************************************************************************
     
     //*******************************PID callback every 10 seconds
     if(calentar.ui_PIDrefresh>PID_TIME){           //Cada (PID_TIME/10) (10) segundos 
@@ -677,7 +731,7 @@ void ChangeState (int change) {
         case state_StandBy:
             if(change==state_Config){           //y se enciende
 #ifdef POWER_OUTPUT_C
-                    PeltierOff();
+                PeltierOff();
 #endif
                 MainOutput=0;      //Apago salida
                 i_aux=24000/4;
@@ -752,12 +806,10 @@ void ChangeState (int change) {
                     smartPID.flg_checkReach=0;          //Check reach is null, because it is above current temp.
                     smartPID.flg_rising=0;              //starts falling, since current temp. is above set temp.
                     PID_calc.error=f_temp - (float) calentar.tempSet;         //computes init error
-                    //PID_calc.error*=10;
                 } else {
                     smartPID.flg_checkReach=1;          //enabless reach timeout check, because it starts below set temp.
                     smartPID.flg_rising=1;              //starts below set temp, so it will start to heat up, it'll be rising.
                     PID_calc.error=(float) calentar.tempSet - f_temp;         //computes init error
-                    //PID_calc.error*=10;
                 }
                 //**********************************
                 
@@ -838,6 +890,7 @@ void ChangeState (int change) {
                 calibration.f_pendAcum=0;
                 calibration.f_CAcum=0;
                 calibration.flg_CalEnd=0;
+                calibration.lm334Acum=0;
                 //ui_PreHeatTimeout=Cal_PreHeat;      //10 segundos de pre-calentamiento rï¿½pido
                 uc_estado=state_MultiPointCal;
                 sprintf(st_UART,"CalMPnt\n\r");
@@ -1025,7 +1078,10 @@ void TMR1_CallBack(void){       //100ms - Base temporal
     //If it's heating and regulating temperature
     if(uc_estado==state_Process) {                  
         
+        calentar.ui_PIDrefresh++;
+        
         calentar.uc_process1sec++;
+        
         if(calentar.uc_process1sec>9) {          //One second passed
             calentar.ul_processCount++;         //total seconds since oven starts to heat
             //ul_reachCount++;
@@ -1034,20 +1090,18 @@ void TMR1_CallBack(void){       //100ms - Base temporal
             
             if(calentar.flg_inicioArriba) {
                 PID_calc.error= f_temp - (float) calentar.tempSet;       //calculates negated error (see inside PID function to see real calculation)
-                //PID_calc.error*=10;         //moves the decimal point of the error
             } else {
                 PID_calc.error= (float) calentar.tempSet - f_temp;       //calculates negated error (see inside PID function to see real calculation)
-                //PID_calc.error*=10;         //moves the decimal point of the error
+                
+                if(VARIOS_flgs.SmartPID) {                          //if SmartPID is enabled
+                    smartPID.ul_errorAvg+=(int) PID_calc.error;          //stores a quarter of the error
+                }
             }
             
             if(PID_calc.error<calentar.i_SetPointMargin) {                       //Temperature is above SetPoint-SetPointMargin
                 calentar.flg_llego=1;                              //it has entered regulation            
                 if(calentar.flg_inicioArriba) calentar.flg_inicioArriba=0;
             }            
-            
-            if(VARIOS_flgs.SmartPID) {                          //if SmartPID is enabled
-                smartPID.ul_errorAvg+=(int) PID_calc.error;          //stores a quarter of the error
-            }
             
             //Timeleft Check
             if(calentar.flg_llego&&calentar.flg_timer) {            //If oven has arrived at the desired temperature
@@ -1080,32 +1134,35 @@ void TMR1_CallBack(void){       //100ms - Base temporal
         }
         
         //*************************************************************************
-        
-        calentar.ui_PIDrefresh++;
-        if(warmup.flg) {
-            calentar.flg_ONPID=1;
-            if(calentar.ul_processCount>warmup.ul_timer) {
-                warmup.flg=0;
-                calentar.flg_ONPID=0;
-                //Suma un error acumulado equivalente a una fracciï¿½n del tiempo de warmup
-                //multiplicado por el error actual.
-                f_aux=warmup.ul_timer*2;//5;
-                f_aux*=PID_calc.error;
-                PID_calc.I_term+=f_aux;
-            }
-        } else {
-            if(calentar.ui_PIDrefresh<PID_calc.result) {
+#ifndef POWER_OUTPUT_C        
+        if(!calentar.flg_inicioArriba) {     //if it didn't started above set temp
+            if(warmup.flg) {
                 calentar.flg_ONPID=1;
-                //BUS595_data.OUT_AC2=~BUS595_data.OUT_AC2;
-                if(VARIOS_flgs.SafeGuard) {
-                    //calentar.f_iterm=calentar.tempSet-calentar.i_safelimit;
-                    if(PID_calc.error<calentar.i_safelimit) calentar.flg_ONPID=0;
+                if(calentar.ul_processCount>warmup.ul_timer) {
+                    warmup.flg=0;
+                    calentar.flg_ONPID=0;
+                    //Suma un error acumulado equivalente a una fracciï¿½n del tiempo de warmup
+                    //multiplicado por el error actual.
+                    f_aux=warmup.ul_timer*2;//5;
+                    f_aux*=PID_calc.error;
+                    PID_calc.I_term+=f_aux;
+                }
+            } else {
+                if(calentar.ui_PIDrefresh<PID_calc.result) {
+                    calentar.flg_ONPID=1;
+                    if(VARIOS_flgs.SafeGuard) {
+                        //calentar.f_iterm=calentar.tempSet-calentar.i_safelimit;
+                        if(PID_calc.error<=calentar.i_safelimit) calentar.flg_ONPID=0;
+                    }
+                }
+                else {
+                    calentar.flg_ONPID=0;
                 }
             }
-            else {
-                calentar.flg_ONPID=0;
-            }
+        } else {
+            calentar.flg_ONPID=0;
         }
+#endif
     }    
     //**************************************PID AutoTuning timing
     else if(uc_estado==state_PIDAT) {
@@ -1417,7 +1474,13 @@ void TMR1_CallBack(void){       //100ms - Base temporal
 #ifdef POWER_OUTPUT_C
         if(uc_debug==5) {
             sprintf(st_UART2,"***DD:%d_A:%d____B:0x%X/0x%X____C:0x%X_D:%X___I:%d\n\r",
-                CoolDown_EN,HeatUp_EN,CoolingPWM,HeatingPWM,Peltier_HowMuch,(int) PID_calc.result,(int) f_lm334);
+                CoolDown_EN,HeatUp_EN,CoolingPWM,HeatingPWM,Peltier_HowMuch,(int) PID_calc.result,l_compensation);
+            flg_send2=1;
+        }
+#else 
+        if(uc_debug==5) {
+            sprintf(st_UART2,"*DD:%.2f_R:%.2f___E:%.2f/%.2f____C:0x%d___I%d:%d\n\r",
+                f_lm334,PID_calc.result,PID_calc.error,PID_calc.I_term,calentar.flg_llego,Convert.flg_lm334,l_compensation);
             flg_send2=1;
         }
 #endif 
@@ -1956,17 +2019,7 @@ void Rotate_LEDs (unsigned char sentido) {      //Hace girar los leds del encode
 //Computes how much power to deliver to the heating (or peltier) element
 //******************************************************************************
 void PID(void) {
-    //Del PDF de autotuning: Output (%) = (100/Kp) * (e + SUM(e)/Ki + delta(e)*Kd)
-
-    //PID_calc.error=(float) calentar.tempSet - f_temp;     //calculo el error entre mediciï¿½n y seteo
-    //PID_calc.error*=10;
-
-    /*if(flg_borrar) {
-        if(PID_calc.error>490 && PID_calc.error<510) {
-            PID_calc.I_term/=2;
-            flg_borrar=0;
-        }
-    }*/
+    
     PID_calc.P_term=PID_calc.error*K_PID.Kp;          //Calculo parte Proporcional
 
     //calculo parte Integrativa, y limito el valor mï¿½ximo
@@ -1975,7 +2028,6 @@ void PID(void) {
     else if(PID_calc.I_term<(-1*PID_calc.I_termMAX)) PID_calc.I_term=(-1)*PID_calc.I_termMAX;
     else if(PID_calc.I_term<(-1*PID_calc.I_termMin)) PID_calc.I_term=(-1)*PID_calc.I_termMin;
     else if(PID_calc.I_term<PID_calc.I_termMin) PID_calc.I_term=PID_calc.I_termMin;
-    //if(PID_calc.error>1000) {
     PID_calc.aux=PID_calc.I_term*K_PID.Ki;
 
         //Calculo parte Derivativa, y guardo el error como error anterior
@@ -1986,21 +2038,8 @@ void PID(void) {
         //sumo las tres partes para obtener el resultado final
     PID_calc.result=PID_calc.P_term+PID_calc.aux;
     if(VARIOS_flgs.Dterm) PID_calc.result+=PID_calc.D_term;
-    //PID_calc.result/=K_PID.Kp;                    //Resultado PID en porcentaje
-    /*} else {
-        PID_calc.aux=PID_calc.I_term/K_PID.Ki2;
-
-        //Calculo parte Derivativa, y guardo el error como error anterior
-        PID_calc.D_term=PID_calc.D_lastError-PID_calc.error;
-        PID_calc.D_term*=K_PID.Kd2;
-        PID_calc.D_lastError=PID_calc.error;
-
-        //sumo las tres partes para obtener el resultado final
-        PID_calc.result=PID_calc.P_term+PID_calc.aux;
-        if(include_D) PID_calc.result+=PID_calc.D_term;
-        PID_calc.result/=K_PID.Kp2;                    //Resultado PID en porcentaje
-    }*/
-    PID_calc.result*=PID_TIME;
+    
+//    PID_calc.result*=PID_TIME;
     //PID_calc.result/=100;    //resultado del PID en 0,001s de tiempo de encendido
 
 #ifndef POWER_OUTPUT_C
@@ -2047,6 +2086,15 @@ void Save_TempCorrection_EEPROM(void) {
     INTERRUPT_GlobalDisable();
     flg_EE_fault=DEE_Write(EEPROM_KTEMP,Convert.KtempL);
     flg_EE_fault=DEE_Write(EEPROM_CTEMP,Convert.CtempL);
+    flg_EE_fault=DEE_Write(EEPROM_KLM334,Convert.LM334_comp);
+    INTERRUPT_GlobalEnable();    
+}
+
+// Parámetros de conversión de temperatura
+void Save_TempCorrection2_EEPROM(void) {
+    INTERRUPT_GlobalDisable();
+    flg_EE_fault=DEE_Write(EEPROM_KTEMP2,Convert.KtempL2);
+    flg_EE_fault=DEE_Write(EEPROM_CTEMP2,Convert.CtempL2);
     INTERRUPT_GlobalEnable();    
 }
 
@@ -2055,6 +2103,7 @@ void Save_TempFactCorrection_EEPROM(void) {
     INTERRUPT_GlobalDisable();
     flg_EE_fault=DEE_Write(EEPROM_KTEMPFact,Convert.KtempFL);
     flg_EE_fault=DEE_Write(EEPROM_CTEMPFact,Convert.CtempFL);
+    flg_EE_fault=DEE_Write(EEPROM_KLM334,Convert.LM334_comp);
     INTERRUPT_GlobalEnable();    
 }
 
@@ -2099,27 +2148,33 @@ void Check_EEPROM(void) {
         TimeDefault.i=0;
         Save_ConfigEEPROM();
 
-        Convert.K_temp=0.001206;//0.001098;//0.000916662;//0.000730519;
+        Convert.K_temp=DEFAULT_KTEMP;
         flg_EE_fault=DEE_Write(EEPROM_KTEMP,Convert.KtempL);
         
         Convert.K_tempFactory=Convert.K_temp;
         flg_EE_fault=DEE_Write(EEPROM_KTEMPFact,Convert.KtempFL);
 
-        Convert.C_temp=2900.055176;//2549.830078;//2597.403;//2664.1806089812;//
+        Convert.C_temp=DEFAULT_CTEMP;
         flg_EE_fault=DEE_Write(EEPROM_CTEMP,Convert.CtempL);
         
         Convert.C_tempFactory=Convert.C_temp;
         flg_EE_fault=DEE_Write(EEPROM_CTEMPFact,Convert.CtempFL);
         
-        Convert.K_LM334=1;
-        flg_EE_fault=DEE_Write(EEPROM_KLM334,Convert.KLM334L);
+        Convert.K_temp2=DEFAULT_KTEMP2;
+        flg_EE_fault=DEE_Write(EEPROM_KTEMP2,Convert.KtempL2);
+        
+        Convert.C_temp2=DEFAULT_CTEMP2;
+        flg_EE_fault=DEE_Write(EEPROM_CTEMP2,Convert.CtempL2);
+        
+        Convert.LM334_comp=DEFAULT_LM334Comp;
+        flg_EE_fault=DEE_Write(EEPROM_KLM334,Convert.LM334_comp);
 
-        Convert.TEMP_MAX=3000;
+        Convert.TEMP_MAX=DEFAULT_TempMax;
         flg_EE_fault=DEE_Write(EEPROM_TMAX,Convert.TempMaxL);
 
-        K_PID.Kp=0.06959;//0.005487;//0.019358;//151.7;//25.9;
-        K_PID.Ki=0.01350;//0.000123;//0.00007;//1333.432;//833.58;//189.5;
-        K_PID.Kd=1.255911;//1.097152;//170.5;//38.76;
+        K_PID.Kp=DEFAULT_KP;
+        K_PID.Ki=DEFAULT_KI;
+        K_PID.Kd=DEFAULT_KD;
         Save_KPID_EEPROM();
         
         VARIOS_flgs.Dterm=0;
@@ -2167,7 +2222,11 @@ void Check_EEPROM(void) {
         
         Convert.CtempFL=DEE_Read(EEPROM_CTEMPFact);
 
-        Convert.KLM334L=DEE_Read(EEPROM_KLM334);
+        Convert.LM334_comp=DEE_Read(EEPROM_KLM334);
+        
+        Convert.KtempL2=DEE_Read(EEPROM_KTEMP2);
+        
+        Convert.CtempL2=DEE_Read(EEPROM_CTEMP2);
 
         Convert.TempMaxL=DEE_Read(EEPROM_TMAX);
                 
@@ -2240,6 +2299,17 @@ void ProcessUART(void) {
             sprintf(st_UART,"KT:%f\n\r\n",Convert.K_temp);
             flg_send=1;
         }
+        //****************************************Valor del parï¿½metro K de temperatura
+        else if(strstr(st_aux,"ktemp2")){
+            if(flg_parameter){        //Hay parï¿½metros, modifico el valor
+                strcpy(st_aux2,++ui_Pointer);
+                ui_Pointer=strlen(st_aux2);
+                Convert.K_temp2=strtof(st_aux2,&ui_Pointer);
+                Save_TempCorrection2_EEPROM();
+            }
+            sprintf(st_UART,"KT2:%f\n\r\n",Convert.K_temp2);
+            flg_send=1;
+        }
         //****************************************Valor del parï¿½metro K de temperatura de fábrica
         else if(strstr(st_aux,"fktmp")){                            //modifies or reads Ktemp Factory value
             if(flg_parameter){        //Hay parï¿½metros, modifico el valor
@@ -2260,6 +2330,17 @@ void ProcessUART(void) {
                 Save_TempCorrection_EEPROM();                   //saves Ctemp calibration to emulated eeprom
             }
             sprintf(st_UART,"CT:%f\n\r\n",Convert.C_temp);
+            flg_send=1;
+        }
+        //****************************************Valor del parï¿½metro C de temperatura
+        else if (strstr(st_aux,"ctemp2")){                   //modifies or reads Ctemp value
+            if(flg_parameter){
+                strcpy(st_aux2,++ui_Pointer);
+                ui_Pointer=strlen(st_aux2);
+                Convert.C_temp2=strtof(st_aux2,&ui_Pointer);     //updates Ctemp calibration
+                Save_TempCorrection2_EEPROM();                   //saves Ctemp calibration to emulated eeprom
+            }
+            sprintf(st_UART,"CT2:%f\n\r\n",Convert.C_temp2);
             flg_send=1;
         }
         //****************************************Valor del parï¿½metro C de temperatura de fábrica
@@ -2286,9 +2367,20 @@ void ProcessUART(void) {
             if(flg_parameter){
                 strcpy(st_aux2,++ui_Pointer);
                 ui_Pointer=strlen(st_aux2);
-                Convert.K_LM334=strtof(st_aux2,&ui_Pointer);
+                Convert.LM334_comp=atoi(st_aux2);//,&ui_Pointer);
+                Save_TempFactCorrection_EEPROM();                   //Saves data to EEPROM
             }
-            sprintf(st_UART,"KLM:%f\n\r\n",Convert.K_LM334);
+            sprintf(st_UART,"KLM:%d\n\r\n",Convert.LM334_comp);
+            flg_send=1;
+        }
+        //****************************************Enable/disable Compensation
+        else if (strstr(st_aux,"comp")){
+            if(flg_parameter){
+                strcpy(st_aux2,++ui_Pointer);
+                ui_Pointer=strlen(st_aux2);
+                Convert.flg_lm334=atoi(st_aux2);//,&ui_Pointer);
+            }
+            sprintf(st_UART,"COMP:%d\n\r",Convert.flg_lm334);
             flg_send=1;
         }
         //****************************************PID AutoTuning
@@ -2849,12 +2941,17 @@ void SmartPID(void) {
         
         if(smartPID.f_aux>e_permitido){                 //If max peak amplitude is above allowed A value             
             //smartPID.f_aux=smartPID.f_peakMaxRising-smartPID.f_peakMaxFalling;      //calculates total oscillation span
-            smartPID.f_aux/=f_tempSet;                  //divides value by set temperature
-            smartPID.f_aux+=1;                          //Adds 1, so it's 1.XXX value, to multiply
-            K_PID.Kp/=smartPID.f_aux;               //modifies Kp accordingly (decreases value)
-            //sprintf(st_UART2,"SMART PID Ovsh-> Kp:%f\n\r\n",K_PID.Kp);          //prints new value to USB 
-            //flg_send2=1;
-            Save_KPID_EEPROM();                 //Stores new value in EEPROM (FLASH)
+            f_aux=PID_calc.I_termMAX/2.0;         //computes 1/2 of Iterm Max allowed value.
+            if(PID_calc.I_term>f_aux) {               //if current i_term is above 1/2 of max, and it oscillates,
+                PID_calc.I_term/=2.0;          //reduces I_term to 1/2 of current value
+            } else {            //I term is not that big, yet system oscillates
+                smartPID.f_aux/=f_tempSet;                  //divides value by set temperature
+                smartPID.f_aux+=1;                          //Adds 1, so it's 1.XXX value, to multiply
+                K_PID.Kp/=smartPID.f_aux;               //modifies Kp accordingly (decreases value)
+                //sprintf(st_UART2,"SMART PID Ovsh-> Kp:%f\n\r\n",K_PID.Kp);          //prints new value to USB 
+                //flg_send2=1;
+                Save_KPID_EEPROM();                 //Stores new value in EEPROM (FLASH)
+            }
         } else if (smartPID.f_aux>e_permitido2) {       //Overshoot is above 0.5º
             //smartPID.f_aux=smartPID.f_peakMaxRising-smartPID.f_peakMaxFalling;      //calculates total oscillation span
             f_aux=PID_calc.I_termMAX/4.0;
