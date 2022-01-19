@@ -78,25 +78,26 @@
 #pragma config FCKSM = CSECMD    //Clock Switching and Fail-Safe Clock Monitor Enable bits->Clock switching is enabled; Fail-safe clock monitor is disabled
 
 // FSEC
-#pragma config CP = ON    //Code Protection Enable bit->Code protection is disabled
+#pragma config CP = OFF    //Code Protection Enable bit->Code protection is disabled
 
 #include "pin_manager.h"
 #include "clock.h"
 #include "system.h"
-#include "usb/usb.h"
-#include "tmr1.h"
-#include "tmr2.h"
+#include "interrupt_manager.h"
+#include "exceptions.h"
 #include "mccp1_compare.h"
 #include "mccp2_compare.h"
 #include "mccp3_compare.h"
-#include "tmr3.h"
-#include "interrupt_manager.h"
-#include "exceptions.h"
-#include "sccp7_compare.h"
 #include "adc1.h"
+#include "tmr1.h"
+#include "tmr2.h"
+#include "tmr3.h"
+#include "uart2.h"
+#include "usb/usb.h"
+#include "sccp7_compare.h"
 #include "spi1.h"
 #include "spi2.h"
-#include "uart2.h"
+
 
 void SYSTEM_Initialize(void)
 {
@@ -104,18 +105,18 @@ void SYSTEM_Initialize(void)
     CLOCK_Initialize();
     INTERRUPT_Initialize();
     USBDeviceInit();
+    USBDeviceAttach();
+    MCCP1_COMPARE_Initialize();
+    MCCP2_COMPARE_Initialize();
     MCCP3_COMPARE_Initialize();
     SCCP7_COMPARE_Initialize();
-    MCCP2_COMPARE_Initialize();
-    MCCP1_COMPARE_Initialize();
-    USBDeviceAttach();
-    SPI1_Initialize();
-    TMR2_Initialize();
     UART2_Initialize();
+    SPI1_Initialize();
     SPI2_Initialize();
     ADC1_Initialize();
-    TMR3_Initialize();
     TMR1_Initialize();
+    TMR2_Initialize();
+    TMR3_Initialize();
     INTERRUPT_GlobalEnable();
 }
 

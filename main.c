@@ -52,12 +52,14 @@
 #include <string.h>        /* For true/false definition                      */
 
 #include "include.h"
+#include "ws2812.h"
 #include "MCP_3913.h"
+#include "smartPID.h"
+#include "dee.h"
 
 //#include "string.h"
 #include "stdio.h"
 
-#include "dee.h"
 #include "mcc_generated_files/mccp2_compare.h"
 #include "mcc_generated_files/mccp3_compare.h"
 #include "mcc_generated_files/mccp1_compare.h"
@@ -69,6 +71,7 @@
 void StandBy(void);                             //Handles StandBy state
 void Config(void);                              //Handles Config state
 void Process(void);                             //Handles Process (heating) state
+void OutputControl(void);                       //Handles Process (heating) output state
 void ChangeState(int change);                   //Handles state changes
 void CalTwoPoints (void);                       //Handles Two Point Temperature Calibration
 void CalMultiPoints(void);                      //Handles MultiPoint Temperature Calibration
@@ -78,7 +81,7 @@ void SmartPID(void);                            //PID Supervisor.
 void CheckOvershoot(void);
 void PID_Autotune(void);                        //PID Autotune. Computes PID parameters
 
-void Delayms(int tiempo);                       //Small delay
+void Delay_loop(int tiempo);                       //Small delay
 void Refresh_digits(void);                      //Refresh display data
 void Rotate_LEDs (unsigned char sentido);       //Handles rotation of encoder LEDs
 
@@ -87,7 +90,7 @@ char Decode_7seg(char num);                     //Decode digit to 7segments
 
 void ADC_CallBack(void);
 
-//Grabo en EEPROM emulada parámetros del equipo
+//Grabo en EEPROM emulada parï¿½metros del equipo
 void Check_EEPROM(void);                        //Verify EEPROM at startup, and gets stored parameters
 void Write_EEPROM(unsigned long Address, unsigned long Value);      //Writes EEPROM value to Address
 void Save_ConfigEEPROM(void);                   //Saves configuration parameters to EEPROM
@@ -130,9 +133,9 @@ int32_t main(void)
     while(SPI1STATbits.SPIBUSY){};
     SPI1BUF=nada;
     while(SPI1STATbits.SPIBUSY){};
-    Delayms(1);
+    Delay_loop(1);
     Refresh_SetHigh();
-    Delayms(1);
+    Delay_loop(1);
     Refresh_SetLow();
     
     //***************************Turn Peltier module OFF
@@ -182,9 +185,9 @@ int32_t main(void)
     LED_Cancel_SetHigh();
     do{
         RST_MCP_SetLow();
-        Delayms(200);
+        Delay_loop(200);
         RST_MCP_SetHigh();
-        Delayms(100);
+        Delay_loop(100);
         timeout++;
         if(timeout>20) break;
     } while(Config_MCP());               //Configura MCP3911
@@ -210,15 +213,25 @@ int32_t main(void)
     f_warmupK=0.25;
     warmup.flg=0;
     smartPID.ul_overshoot_MAX=49;
+    smartPID.ui_belowOverflow = 500;                //500 seconds without reaching tempSet (when already in process)
     //smartPID.ul_reachTIMEOUT=999;
     calentar.timeSet=TimeDefault.i;    //Tiempo seteado por defecto
     calentar.tempSet=TempDefault.i;
 
-    PID_calc.I_termMAX=500000;              //Max accumulated Iterm is 50.000 ºC
-    PID_calc.I_termMin=500;                 //Min accumulated Iterm is 50ºC
+    
+#define I_SAMPLE_RATE   4
+#define D_SAMPLE_RATE   4
+    PID_calc.I_termMAX=5000000;              //Max accumulated Iterm is 500.000 ï¿½C
+    PID_calc.I_termMin=500;                 //Min accumulated Iterm is 50ï¿½C
+    PID_calc.KiMAX = PID_TIME / PID_calc.I_termMAX;         //Maximum allowed Ki
+    PID_calc.i_sampleRate=I_SAMPLE_RATE;            //for every 5 samples, one is taken to calculate I_term
+    PID_calc.d_sampleRate=D_SAMPLE_RATE;            //for every 5 samples, one is taken to calculate D_term
+    
     calentar.i_safelimit=3;              //0.3 grados por debajo del lï¿½mite
    
-    Convert.flg_lm334=0;                //By default, LM334 compensation is enabled
+    
+    
+    Convert.flg_lm334=0;                //By default, LM334 compensation is disabled
     
     flg_StdBy=1;                //inicia en Stand By
     uc_estado=state_StandBy;
@@ -282,6 +295,12 @@ int32_t main(void)
                 break;
             case state_Process:
                 Process();
+#ifndef POWER_OUTPUT_C
+                if(calentar.flg_10ms) {
+                    OutputControl();
+                    calentar.flg_10ms=0;
+                }
+#endif
                 break;
             case state_PIDAT:
                 PID_Autotune();
@@ -314,7 +333,7 @@ int32_t main(void)
                     //if(USBUSARTIsTxTrfReady()) putsUSBUSART(st_RX_Buffer);
                     for(uc_RX_Pointer2=0;uc_RX_Pointer2<uc_RX_bytes;uc_RX_Pointer2++){
                         if(st_RX_Buffer[uc_RX_Pointer2]>13 && uc_RX_Pointer<25){
-                            //uc_RX_bytes=strlen(st_UART_Rx);
+                            //uc_RX_bytes=strlen(st_UART_Rx);                      
                             st_UART_Rx[uc_RX_Pointer]=st_RX_Buffer[uc_RX_Pointer2];
                             //strcat(st_UART_Rx,st_RX_Buffer);
                             //st_UART_Rx[uc_RX_Pointer]=st_RX_Buffer[0];
@@ -583,9 +602,9 @@ void CalMultiPoints (void) {
 
 void StandBy (void) {
     if(!flg_turnoff){
-        if(tecla.estado && tecla.cual==BT_Encoder){             //Está siendo presionada la tecla del encoder
-            if(tecla.tiempo>20) {                           //Durante más de 2 segundos
-                tecla.procesado=1;                          //Registra la pulsación
+        if(tecla.estado && tecla.cual==BT_Encoder){             //Estï¿½ siendo presionada la tecla del encoder
+            if(tecla.tiempo>20) {                           //Durante mï¿½s de 2 segundos
+                tecla.procesado=1;                          //Registra la pulsaciï¿½n
                 tecla.cual=nada;
                 ChangeState(state_Config);                  //Y enciende el equipo
             }
@@ -794,23 +813,28 @@ void ChangeState (int change) {
                 smartPID.ul_reachTIMEOUT=1000;          //reachTIMEOUT -> default time expected to have reached regulation
                 smartPID.ul_reachTIMEOUT_default=1500;  //reachTIMEOUT -> default time expected to have reached regulation
                 smartPID.f_tempAnt=f_temp;              //first "tempAnt" is current temperature when process starts
-                if(calentar.tempSet!=0) f_tempSet=calentar.tempSet;                //Set temperature
+                if(calentar.tempSet!=0) {
+                    f_tempSet=calentar.tempSet;                //Set temperature
+                    smartPID.e_permitido = calentar.tempSet /100;               //1% of tempSet
+                    smartPID.e_permitido2 = calentar.tempSet /10;               //10% of tempSet
+                }
                 else f_tempSet=1;
                 smartPID.ul_errorAvg=0;                 //Avg erro is 0 at the beggining
                         
                 smartPID.f_peakMaxRising=0;         //starts with a null value to be easily overwritten
                 smartPID.f_peakMaxFalling=5000;     //starts with a very high value to be easily overwritten
-
+               
+                
 #ifndef POWER_OUTPUT_C                
                 if(calentar.flg_inicioArriba) {     //if process starts with current temp above set temp.
                     smartPID.flg_checkReach=0;          //Check reach is null, because it is above current temp.
                     smartPID.flg_rising=0;              //starts falling, since current temp. is above set temp.
-                    PID_calc.error=f_temp - (float) calentar.tempSet;         //computes init error
+                    //PID_calc.error=f_temp - (float) calentar.tempSet;         //computes init error
                 } else {
                     smartPID.flg_checkReach=1;          //enabless reach timeout check, because it starts below set temp.
-                    smartPID.flg_rising=1;              //starts below set temp, so it will start to heat up, it'll be rising.
-                    PID_calc.error=(float) calentar.tempSet - f_temp;         //computes init error
+                    smartPID.flg_rising=1;              //starts below set temp, so it will start to heat up, it'll be rising.   
                 }
+                PID_calc.error=(float) calentar.tempSet - f_temp;         //computes init error
                 //**********************************
                 
                 //****************Precalentamiento
@@ -818,21 +842,33 @@ void ChangeState (int change) {
                     if(VARIOS_flgs.WrmpUP) { 
                         warmup.ul_timer=calentar.tempSet-f_temp;
                         warmup.ul_timer*=f_warmupK;//warmup_K;
+                        if(warmup.ul_timer>Cal_PreHeat) warmup.ul_timer=Cal_PreHeat;
                         warmup.flg=1;
                     }
-                } else {                                //Starts heating with current temp. above set temp.
+                } /*else {                                //Starts heating with current temp. above set temp.
                     f_aux=f_temp - (float) calentar.tempSet;        //check initial temperature diference
                     if(f_aux>0) {                 //if positive, and non-zero
-                        f_aux/=100;             //divides over 10º difference
+                        f_aux/=100;             //divides over 10ï¿½ difference
                         f_aux=1-f_aux;
                         if(f_aux<0) f_aux=0;
                         PID_calc.I_term=PID_calc.I_termMAX/2;           //I term equals half of the max
                         PID_calc.I_term*=f_aux;                         //divided by temperature difference. If temp difference is 2 degrees, i_term=I_TermMax/4
                         if(PID_calc.I_term>PID_calc.I_termMAX) PID_calc.I_term=PID_calc.I_termMAX;
                     }
-                }
+                }*/
+                //*********************************
+                
+                //************************SAFEGUARD                 //Computes safeguard limit
+                f_aux=calentar.tempSet/DEFAULT_TempMax;             //Percentage of tempSet over TempMax
+                f_aux*=-10;                                          //times 10, to include first decimal
+                calentar.i_safelimit=(int) f_aux;                    //Calculated percentage
+                if(calentar.i_safelimit < -10) calentar.i_safelimit = -10;     //if it's negative, for some reasen, is set to 1 degree by default
+                if(calentar.i_safelimit > 0) calentar.i_safelimit = 0;    //if it's more than 1 degree, for some reasen, is set to 1 degree by default
+                //*********************************
 #endif
                 //*********************************
+                
+                
                 calentar.flg_llego=0;               //It hasn't reached temperature yet. That's later to define
                 calentar.enableOutput=1;                   //Enable output (Output power will depend on PID calculations)
                 calentar.ul_processCount=0;                 //Overall process second counter
@@ -997,7 +1033,7 @@ void ChangeState (int change) {
             break;
 //*****************************************************************************
 // Estado de TwoPointCal
-        case state_TwoPointCal:             //Estaba haciendo calibración de 2 puntos
+        case state_TwoPointCal:             //Estaba haciendo calibraciï¿½n de 2 puntos
 #ifdef POWER_OUTPUT_C
             PeltierOff();
 #endif
@@ -1016,7 +1052,7 @@ void ChangeState (int change) {
             TMR3_Stop();                //Detengo timer 3, de dimerizado RT
             flg_dimin=1;                //Dimerizo nï¿½meros en startup
             flg_turnoff=1;
-            sprintf(st_UART2,"Fin de Calibración\n\r");
+            sprintf(st_UART2,"Fin de Calibraciï¿½n\n\r");
             flg_send2=1;
             uc_estado=state_Config;     //cambio de estado
         //}
@@ -1042,7 +1078,7 @@ void ChangeState (int change) {
             TMR3_Stop();                //Detengo timer 3, de dimerizado RT
             flg_dimin=1;                //Dimerizo nï¿½meros en startup
             flg_turnoff=1;
-            sprintf(st_UART2,"Fin de Calibración\n\r");
+            sprintf(st_UART2,"Fin de Calibraciï¿½n\n\r");
             flg_send2=1;
             uc_estado=state_Config;     //cambio de estado
         //}
@@ -1078,9 +1114,8 @@ void TMR1_CallBack(void){       //100ms - Base temporal
     //If it's heating and regulating temperature
     if(uc_estado==state_Process) {                  
         
-        calentar.ui_PIDrefresh++;
-        
         calentar.uc_process1sec++;
+        calentar.ui_PIDrefresh++;
         
         if(calentar.uc_process1sec>9) {          //One second passed
             calentar.ul_processCount++;         //total seconds since oven starts to heat
@@ -1088,13 +1123,22 @@ void TMR1_CallBack(void){       //100ms - Base temporal
             smartPID.ui_SPIDcounter++;              
             calentar.uc_process1sec=0;          //restarts 1sec counter
             
-            if(calentar.flg_inicioArriba) {
+            /*if(calentar.flg_inicioArriba) {
                 PID_calc.error= f_temp - (float) calentar.tempSet;       //calculates negated error (see inside PID function to see real calculation)
-            } else {
+            } else {-*/
                 PID_calc.error= (float) calentar.tempSet - f_temp;       //calculates negated error (see inside PID function to see real calculation)
                 
                 if(VARIOS_flgs.SmartPID) {                          //if SmartPID is enabled
                     smartPID.ul_errorAvg+=(int) PID_calc.error;          //stores a quarter of the error
+                }
+            //}
+            
+            if(VARIOS_flgs.SafeGuard) {
+                safeGuard.slopeCounter++;
+                if(safeGuard.slopeCounter>9) {                                      //Every 10 seconds, it checks current slope
+                    safeGuard.f_slope = f_temp - safeGuard.f_previousTemp;          //Calculates current slope
+                    safeGuard.f_previousTemp=f_temp;                                //(stores current temp value as previous for next calculation)
+                    safeGuard.slopeCounter=0;
                 }
             }
             
@@ -1121,53 +1165,21 @@ void TMR1_CallBack(void){       //100ms - Base temporal
             
             if(datalog.record) {            //Si tiene que registrar valores
                 datalog.timeout--;
-                if(!datalog.timeout) {          //pasó el tiempo determinado
-                    if(datalog.pointer<DATALOG_Max) {             //Si no se llenó la memoria
+                if(!datalog.timeout) {          //pasï¿½ el tiempo determinado
+                    if(datalog.pointer<DATALOG_Max) {             //Si no se llenï¿½ la memoria
                         datalog.data[datalog.pointer]=(int) f_temp;         //registro la temperatura
                         datalog.pointer++;                  
                         datalog.timeout=datalog.tiempo;             //reseteo el contador de intervalo
-                    } else {                    //Se llenó la memoria, deja de registrar datos.
+                    } else {                    //Se llenï¿½ la memoria, deja de registrar datos.
                         datalog.record=0;
                     }
                 }
             }
         }
         
-        //*************************************************************************
-#ifndef POWER_OUTPUT_C        
-        if(!calentar.flg_inicioArriba) {     //if it didn't started above set temp
-            if(warmup.flg) {
-                calentar.flg_ONPID=1;
-                if(calentar.ul_processCount>warmup.ul_timer) {
-                    warmup.flg=0;
-                    calentar.flg_ONPID=0;
-                    //Suma un error acumulado equivalente a una fracciï¿½n del tiempo de warmup
-                    //multiplicado por el error actual.
-                    f_aux=warmup.ul_timer*2;//5;
-                    f_aux*=PID_calc.error;
-                    PID_calc.I_term+=f_aux;
-                }
-            } else {
-                if(calentar.ui_PIDrefresh<PID_calc.result) {
-                    calentar.flg_ONPID=1;
-                    if(VARIOS_flgs.SafeGuard) {
-                        //calentar.f_iterm=calentar.tempSet-calentar.i_safelimit;
-                        if(PID_calc.error<=calentar.i_safelimit) calentar.flg_ONPID=0;
-                    }
-                }
-                else {
-                    calentar.flg_ONPID=0;
-                }
-            }
-        } else {
-            calentar.flg_ONPID=0;
-        }
-#endif
-    }    
-    //**************************************PID AutoTuning timing
-    else if(uc_estado==state_PIDAT) {
-        if(PIDAT.ui_1sec<PIDAT_Output) PIDAT.flg_ONPID=1;
-        else PIDAT.flg_ONPID=0;
+    } else if(uc_estado==state_PIDAT) {
+        /*if(PIDAT.ui_1sec<PIDAT_Output) PIDAT.flg_ONPID=1;
+        else PIDAT.flg_ONPID=0;*/
 
         PIDAT.ui_1sec++;
         if(PIDAT.ui_1sec>9) {        //cada 1 segundos
@@ -1210,7 +1222,7 @@ void TMR1_CallBack(void){       //100ms - Base temporal
             }
     }
     //******************************************************END of state timing
-
+    
     //************************************************************************
     //          Ignoro pulsaciï¿½n durante el cambio de estado
     if(flg_turnoff) {               //Si estoy cambiando de estado
@@ -1309,26 +1321,26 @@ void TMR1_CallBack(void){       //100ms - Base temporal
         led.b=Rojo_B;
         led2=led;
         led3=led;
-    } else {                    //No hay ningún error, RGB muestra estado horno
+    } else {                    //No hay ningï¿½n error, RGB muestra estado horno
         if(uc_estado==state_StandBy) {      //Stand By -> RGB apagado
             led.r=nada;
             led.g=nada;
             led.b=nada;
             led2=led;
             led3=led;
-        } else if(uc_estado==state_Process) {       //Process -> Está en proceso
-            if(calentar.flg_llego) {        //flg_llegó: llegó a la temperatura seteada, RGB Azul
+        } else if(uc_estado==state_Process) {       //Process -> Estï¿½ en proceso
+            if(calentar.flg_llego) {        //flg_llegï¿½: llegï¿½ a la temperatura seteada, RGB Azul
                 led.r=AzulTD_R;                
                 led.g=AzulTD_G;
                 led.b=AzulTD_B;                
-            } else {                        //flg_llego = 0 -> Está calentando, RGB Naranja
+            } else {                        //flg_llego = 0 -> Estï¿½ calentando, RGB Naranja
                 led.r=Naranja_R;
                 led.g=Naranja_G;
                 led.b=Naranja_B;
             }
             led2=led;
             led3=led;
-        } else if(uc_estado==state_Config) { //Está en modo de configuración de temperatura y tiempo, RGB Blanco
+        } else if(uc_estado==state_Config) { //Estï¿½ en modo de configuraciï¿½n de temperatura y tiempo, RGB Blanco
             led.r=White_R;
             led.g=White_G;
             led.b=White_B;
@@ -1473,14 +1485,14 @@ void TMR1_CallBack(void){       //100ms - Base temporal
         }
 #ifdef POWER_OUTPUT_C
         if(uc_debug==5) {
-            sprintf(st_UART2,"***DD:%d_A:%d____B:0x%X/0x%X____C:0x%X_D:%X___I:%d\n\r",
-                CoolDown_EN,HeatUp_EN,CoolingPWM,HeatingPWM,Peltier_HowMuch,(int) PID_calc.result,l_compensation);
+            sprintf(st_UART2,"***DD:%d_R:%.2f____H:%X/0x%X____C:%X/0x%X___I:%.2f\n\r",
+                (int) PID_calc.result ,Peltier_HowMuch/655.36, HeatUp_EN,HeatingPWM,CoolDown_EN,CoolingPWM,PID_calc.I_term);
             flg_send2=1;
         }
 #else 
         if(uc_debug==5) {
-            sprintf(st_UART2,"*DD:%.2f_R:%.2f___E:%.2f/%.2f____C:0x%d___I%d:%d\n\r",
-                f_lm334,PID_calc.result,PID_calc.error,PID_calc.I_term,calentar.flg_llego,Convert.flg_lm334,l_compensation);
+            sprintf(st_UART2,"*DD:%.2f_R:%.2f___lim:%d_out:%d___E:%.2f/%.2f____C:0x%d___I%d:%d\n\rA:%d - B:%d\n\r",
+                f_lm334,PID_calc.result,calentar.i_safelimit,(PID_calc.error>calentar.i_safelimit),PID_calc.error,PID_calc.I_term,calentar.flg_llego,Convert.flg_lm334,l_compensation,l_temp,l_334);
             flg_send2=1;
         }
 #endif 
@@ -1506,6 +1518,12 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
     //*************************************************************************
 
     //************** Toggle TRIAC if output is Set
+    calentar.uc_10msCounter++;
+    if(calentar.uc_10msCounter>9) {
+        calentar.flg_10ms=1;
+        calentar.uc_10msCounter=0;
+    }
+    
     if(calentar.flg_ONPID || PIDAT.flg_ONPID) MainOutput=~MainOutput;
     else MainOutput=0;
         
@@ -1650,7 +1668,8 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
             BUS595_data.D2=uc_dec2;
             if(!flg_abort) {
                 if(flg_muestro==Temp_Set) BUS595_data.D2_DP=1;
-                if(!flg_tempNeg) BUS595_data.D1_DP=1;
+                //if(!flg_tempNeg) 
+                BUS595_data.D1_DP=1;
             }
             if(Error_Code==ERROR_MCP) BUS595_data.D1=letra_r;
             break;
@@ -1737,7 +1756,7 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
         SPI1BUF=0xFF;
         while(SPI1STATbits.SPIBUSY){};
         Refresh_SetHigh();
-        Delayms(100);
+        Delay_loop(1);
         Refresh_SetLow();
     } else if((!flg_StdBy)||flg_dimout) {           //Not in Stand By, display what is supposed to
         Refresh_digits();
@@ -1752,19 +1771,19 @@ void TMR2_CallBack(void){        //1ms - refresco de nï¿½meros
         SPI1BUF=nada;
         while(SPI1STATbits.SPIBUSY){};
         Refresh_SetHigh();
-        Delayms(100);
+        Delay_loop(1);
         Refresh_SetLow();
     }
 
     
     //*******************************Internal datalog download data
-    if(datalog.download&&datalog.next) {              //Si recibí comando para descargar datos
+    if(datalog.download&&datalog.next) {              //Si recibï¿½ comando para descargar datos
         if(datalog.pointer2<datalog.pointer){
-            if(!datalog.flg_send) {         //Y ya envió un dato
+            if(!datalog.flg_send) {         //Y ya enviï¿½ un dato
                 datalog.convert=(float) datalog.data[datalog.pointer2] / 10.0;
                 sprintf(st_download,"D:;%d;%.1f\n\r",datalog.pointer2*datalog.tiempo,datalog.convert);
                 datalog.pointer2++;
-                datalog.flg_send=1;             //envía siguiente dato
+                datalog.flg_send=1;             //envï¿½a siguiente dato
                 datalog.next=0;
             }
         } else {
@@ -1843,7 +1862,7 @@ void TMR3_CallBack(void) {              //50us para dimerizado de RT
 //
 //
 //******************************************************************************
-void Delayms(int tiempo){           //Funciï¿½n de delay
+void Delay_loop(int tiempo){           //Funciï¿½n de delay
     int counter;
     for(counter=0;counter<tiempo;counter++){
     }
@@ -1963,7 +1982,7 @@ void Refresh_digits(void) {         //Refresco estado del bus 595
     while(SPI1STATbits.SPIBUSY);
 
     Refresh_SetHigh();
-    Delayms(100);
+    Delay_loop(1);
     Refresh_SetLow();
 
 }
@@ -2023,17 +2042,39 @@ void PID(void) {
     PID_calc.P_term=PID_calc.error*K_PID.Kp;          //Calculo parte Proporcional
 
     //calculo parte Integrativa, y limito el valor mï¿½ximo
-    PID_calc.I_term+=PID_calc.error;              //Acumulo el error
-    if(PID_calc.I_term>PID_calc.I_termMAX) PID_calc.I_term=PID_calc.I_termMAX;    
-    else if(PID_calc.I_term<(-1*PID_calc.I_termMAX)) PID_calc.I_term=(-1)*PID_calc.I_termMAX;
-    else if(PID_calc.I_term<(-1*PID_calc.I_termMin)) PID_calc.I_term=(-1)*PID_calc.I_termMin;
-    else if(PID_calc.I_term<PID_calc.I_termMin) PID_calc.I_term=PID_calc.I_termMin;
+    if(!PID_calc.i_sampleRate) {
+        PID_calc.I_term+=PID_calc.error;              //Acumulo el error
+        if(PID_calc.I_term>PID_calc.I_termMAX) PID_calc.I_term=PID_calc.I_termMAX;    
+        else if(PID_calc.I_term<(-1*PID_calc.I_termMAX)) PID_calc.I_term=(-1)*PID_calc.I_termMAX;
+#ifndef POWER_OUTPUT_C
+        //else if(PID_calc.I_term<(-1*PID_calc.I_termMin)) PID_calc.I_term=(-1)*PID_calc.I_termMin;
+        else if(PID_calc.I_term<PID_calc.I_termMin) PID_calc.I_term=PID_calc.I_termMin;
+#endif
+        PID_calc.i_sampleRate=I_SAMPLE_RATE;
+    } else {
+        PID_calc.i_sampleRate--;
+    }
     PID_calc.aux=PID_calc.I_term*K_PID.Ki;
 
-        //Calculo parte Derivativa, y guardo el error como error anterior
-    PID_calc.D_term=PID_calc.D_lastError-PID_calc.error;
-    PID_calc.D_term*=K_PID.Kd;
-    PID_calc.D_lastError=PID_calc.error;
+    //Calculo parte Derivativa, y guardo el error como error anterior
+    if(!PID_calc.d_sampleRate){
+        PID_calc.D_rest=PID_calc.D_lastError-PID_calc.error;
+        PID_calc.D_lastError=PID_calc.error;
+        PID_calc.d_sampleRate=D_SAMPLE_RATE;
+    } else {
+        PID_calc.d_sampleRate--;
+    }
+    PID_calc.D_term=PID_calc.D_rest * K_PID.Kd;
+    
+    /*if(VARIOS_flgs.SafeGuard){           //If SafeGuard is enabled
+        if(PID_calc.error < 20) {           //If error is below 2ï¿½, 
+            PID_calc.P_term=0;              //P term is not used
+            PID_calc.D_term=0;              //D term is not used
+        } else if (PID_calc.error < 50) {    //else, if temp is below 5 degrees
+            PID_calc.P_term/=2;             //it only takes half 
+            PID_calc.D_term/=2;             //it only takes half
+        }
+    }*/
 
         //sumo las tres partes para obtener el resultado final
     PID_calc.result=PID_calc.P_term+PID_calc.aux;
@@ -2048,8 +2089,8 @@ void PID(void) {
 }
 
 //*****************************************************************************
-// Rutinas para grabado en EEPROM (flash) interna de parámetros y constantes
-// de conversión.
+// Rutinas para grabado en EEPROM (flash) interna de parï¿½metros y constantes
+// de conversiï¿½n.
 //*****************************************************************************
 //**************Grabo en memoria nueva Configuracion
 //*****************************************************************************
@@ -2067,7 +2108,7 @@ void Save_ConfigEEPROM(void){
 
 }
 
-// Parámetros de calibración PID
+// Parï¿½metros de calibraciï¿½n PID
 void Save_KPID_EEPROM(void){
     INTERRUPT_GlobalDisable();
 
@@ -2081,7 +2122,7 @@ void Save_KPID_EEPROM(void){
 
 }
 
-// Parámetros de conversión de temperatura
+// Parï¿½metros de conversiï¿½n de temperatura
 void Save_TempCorrection_EEPROM(void) {
     INTERRUPT_GlobalDisable();
     flg_EE_fault=DEE_Write(EEPROM_KTEMP,Convert.KtempL);
@@ -2090,7 +2131,7 @@ void Save_TempCorrection_EEPROM(void) {
     INTERRUPT_GlobalEnable();    
 }
 
-// Parámetros de conversión de temperatura
+// Parï¿½metros de conversiï¿½n de temperatura
 void Save_TempCorrection2_EEPROM(void) {
     INTERRUPT_GlobalDisable();
     flg_EE_fault=DEE_Write(EEPROM_KTEMP2,Convert.KtempL2);
@@ -2098,7 +2139,7 @@ void Save_TempCorrection2_EEPROM(void) {
     INTERRUPT_GlobalEnable();    
 }
 
-// Parámetros de conversión de temperatura de fábrica
+// Parï¿½metros de conversiï¿½n de temperatura de fï¿½brica
 void Save_TempFactCorrection_EEPROM(void) {
     INTERRUPT_GlobalDisable();
     flg_EE_fault=DEE_Write(EEPROM_KTEMPFact,Convert.KtempFL);
@@ -2177,8 +2218,8 @@ void Check_EEPROM(void) {
         K_PID.Kd=DEFAULT_KD;
         Save_KPID_EEPROM();
         
-        VARIOS_flgs.Dterm=0;
-        
+        VARIOS_flgs.Dterm=1;
+/*        
 #ifdef POWER_OUTPUT_A                           //If is a 100W oven, then disable Safeguard as default
         VARIOS_flgs.SafeGuard=0;
         VARIOS_flgs.SmartPID=1;
@@ -2190,12 +2231,17 @@ void Check_EEPROM(void) {
         VARIOS_flgs.SmartPID=1;
         VARIOS_flgs.WrmpUP=1;
 #endif
-                
+*/              
 #ifdef POWER_OUTPUT_C                            //If it's Peltier oven
         VARIOS_flgs.SafeGuard=0;
         VARIOS_flgs.SmartPID=0;
         VARIOS_flgs.WrmpUP=0;
+#else 
+        VARIOS_flgs.SafeGuard=1;
+        VARIOS_flgs.SmartPID=1;
+        VARIOS_flgs.WrmpUP=1;
 #endif
+        
 
         flg_EE_fault=DEE_Write(EEPROM_VariosFlgs,VARIOS_flgs.L);
         
@@ -2287,20 +2333,9 @@ void ProcessUART(void) {
         } else {                        //no hay coma, no hay parï¿½metros, simplemente pregunto por algï¿½n valor
             flg_parameter=0;
         }
-
+        
         //****************************************Valor del parï¿½metro K de temperatura
-        if(strstr(st_aux,"ktemp")){
-            if(flg_parameter){        //Hay parï¿½metros, modifico el valor
-                strcpy(st_aux2,++ui_Pointer);
-                ui_Pointer=strlen(st_aux2);
-                Convert.K_temp=strtof(st_aux2,&ui_Pointer);
-                Save_TempCorrection_EEPROM();
-            }
-            sprintf(st_UART,"KT:%f\n\r\n",Convert.K_temp);
-            flg_send=1;
-        }
-        //****************************************Valor del parï¿½metro K de temperatura
-        else if(strstr(st_aux,"ktemp2")){
+        if(strstr(st_aux,"ktemp2")){
             if(flg_parameter){        //Hay parï¿½metros, modifico el valor
                 strcpy(st_aux2,++ui_Pointer);
                 ui_Pointer=strlen(st_aux2);
@@ -2310,7 +2345,19 @@ void ProcessUART(void) {
             sprintf(st_UART,"KT2:%f\n\r\n",Convert.K_temp2);
             flg_send=1;
         }
-        //****************************************Valor del parï¿½metro K de temperatura de fábrica
+        //****************************************Valor del parï¿½metro K de temperatura
+        else if(strstr(st_aux,"ktemp")){
+            if(flg_parameter){        //Hay parï¿½metros, modifico el valor
+                strcpy(st_aux2,++ui_Pointer);
+                ui_Pointer=strlen(st_aux2);
+                Convert.K_temp=strtof(st_aux2,&ui_Pointer);
+                Save_TempCorrection_EEPROM();
+            }
+            sprintf(st_UART,"KT:%f\n\r\n",Convert.K_temp);
+            flg_send=1;
+        }
+        
+        //****************************************Valor del parï¿½metro K de temperatura de fï¿½brica
         else if(strstr(st_aux,"fktmp")){                            //modifies or reads Ktemp Factory value
             if(flg_parameter){        //Hay parï¿½metros, modifico el valor
                 strcpy(st_aux2,++ui_Pointer);
@@ -2319,17 +2366,6 @@ void ProcessUART(void) {
                 Save_TempFactCorrection_EEPROM();                           //Saves KtempFactory to emulated eeprom
             }
             sprintf(st_UART,"KTf:%f\n\r\n",Convert.K_tempFactory);
-            flg_send=1;
-        }
-        //****************************************Valor del parï¿½metro C de temperatura
-        else if (strstr(st_aux,"ctemp")){                   //modifies or reads Ctemp value
-            if(flg_parameter){
-                strcpy(st_aux2,++ui_Pointer);
-                ui_Pointer=strlen(st_aux2);
-                Convert.C_temp=strtof(st_aux2,&ui_Pointer);     //updates Ctemp calibration
-                Save_TempCorrection_EEPROM();                   //saves Ctemp calibration to emulated eeprom
-            }
-            sprintf(st_UART,"CT:%f\n\r\n",Convert.C_temp);
             flg_send=1;
         }
         //****************************************Valor del parï¿½metro C de temperatura
@@ -2343,7 +2379,19 @@ void ProcessUART(void) {
             sprintf(st_UART,"CT2:%f\n\r\n",Convert.C_temp2);
             flg_send=1;
         }
-        //****************************************Valor del parï¿½metro C de temperatura de fábrica
+        //****************************************Valor del parï¿½metro C de temperatura
+        else if (strstr(st_aux,"ctemp")){                   //modifies or reads Ctemp value
+            if(flg_parameter){
+                strcpy(st_aux2,++ui_Pointer);
+                ui_Pointer=strlen(st_aux2);
+                Convert.C_temp=strtof(st_aux2,&ui_Pointer);     //updates Ctemp calibration
+                Save_TempCorrection_EEPROM();                   //saves Ctemp calibration to emulated eeprom
+            }
+            sprintf(st_UART,"CT:%f\n\r\n",Convert.C_temp);
+            flg_send=1;
+        }
+        
+        //****************************************Valor del parï¿½metro C de temperatura de fï¿½brica
         else if (strstr(st_aux,"fctmp")){
             if(flg_parameter){
                 strcpy(st_aux2,++ui_Pointer);
@@ -2354,7 +2402,7 @@ void ProcessUART(void) {
             sprintf(st_UART,"CTf:%f\n\r\n",Convert.C_tempFactory);
             flg_send=1;
         }
-        //****************************************Restaura calibración de fábrica
+        //****************************************Restaura calibraciï¿½n de fï¿½brica
         else if(strstr(st_aux,"restore")) {
             Convert.K_temp=Convert.K_tempFactory;           //restores Ktemp to factory calibration
             Convert.C_temp=Convert.C_tempFactory;           //restores Ctemp to factory calibration
@@ -2494,13 +2542,9 @@ void ProcessUART(void) {
         else if(strstr(st_aux,"sfglimit")){
             if(flg_parameter){
                 strcpy(st_aux2,++ui_Pointer);
-                //ui_Pointer=strlen(st_aux2);
-                calentar.i_safelimit=atoi(st_aux2)*10;
-                INTERRUPT_GlobalDisable();
-                flg_EE_fault=DEE_Write(EEPROM_Margin,calentar.ul_LimitAndSPMargin);
-                INTERRUPT_GlobalEnable();
+                calentar.i_safelimit=atoi(st_aux2);
             }
-            sprintf(st_UART,"Safeguard Limit:%d\n\r\n",calentar.i_safelimit/10);
+            sprintf(st_UART,"SfgLimit:%d\n\r\n",calentar.i_safelimit);
             flg_send=1;
         }
         //****************************************Valor de Margen de SetPoint
@@ -2513,7 +2557,7 @@ void ProcessUART(void) {
                 flg_EE_fault=DEE_Write(EEPROM_Margin,calentar.ul_LimitAndSPMargin);
                 INTERRUPT_GlobalEnable();
             }
-            sprintf(st_UART,"SetPointMargin:%d\n\r",calentar.i_SetPointMargin/10);
+            sprintf(st_UART,"SetPointMargin:%d\n\r",calentar.i_SetPointMargin);
             flg_send=1;
         }
         //****************************************Multiplicador de WarmUp
@@ -2616,7 +2660,7 @@ void ProcessUART(void) {
                 calibration.f_newData=strtof(st_aux2,&ui_Pointer);
                 calibration.flg_newData=1;
             }
-            sprintf(st_UART2,"Cal:%.0f\n\r", calibration.f_newData);
+            sprintf(st_UART2,"Cal:%.1f\n\r", calibration.f_newData);
             flg_send2=1;
         }
         //****************************************Fin_CalMultiPunto
@@ -2740,7 +2784,7 @@ void ProcessUART(void) {
 };
 
 //***********************************************************************************************
-// Autotune de PID - utiliza cálculo de Zieger-Nichols?
+// Autotune de PID - utiliza cï¿½lculo de Zieger-Nichols?
 //***********************************************************************************************
 void PID_Autotune(void) {
     
@@ -2748,7 +2792,7 @@ void PID_Autotune(void) {
         if((tecla.cual==BT_Encoder)&&(tecla.tiempo<20)) {      //Habï¿½a apreatado el encoder
             tecla.procesado=1;
             tecla.cual=nada;
-            if(flg_abort){                      //Si había sostenido el cancel para salir
+            if(flg_abort){                      //Si habï¿½a sostenido el cancel para salir
                 calentar.enableOutput=0;        //termina el proceso
                 flg_abort=0;
                 ChangeState(state_Config);      //Y vuelve a config
@@ -2796,13 +2840,15 @@ void PID_Autotune(void) {
                 PIDAT.f_Rr=PIDAT.f_PIDATaux/PIDAT.f_PIDATslope;
 
                 
-                K_PID.Kp=0.000519481*PIDAT.f_Td;      //0.002597403*f_Td;  //0.012987013*f_Td;
+                K_PID.Kp=0.0519481*PIDAT.f_Td;      //0.000519481*PIDAT.f_Td;    //0.002597403*f_Td;  //0.012987013*f_Td;
                 K_PID.Kp*=PIDAT.f_Rr;
                 if(K_PID.Kp<0) K_PID.Kp*=-1;
 
                 PIDAT.f_PIDATaux=PIDAT.f_Td*PIDAT.f_Td;
                 K_PID.Ki=PIDAT.f_PIDATaux/169.4;//1694;          //169.4;
                 K_PID.Ki*=PIDAT.f_Rr;
+                
+                //if(K_PID.Ki > PID_calc.KiMAX) K_PID.Ki = PID_calc.KiMAX;            //If calculated value exceeds MAX allowed value, use MAX
 
                 K_PID.Kd=0.005844156*PIDAT.f_Rr;
 
@@ -2838,7 +2884,7 @@ void PID_Autotune(void) {
 //*****************************************************************************
 void SmartPID(void) {
 
-    //Parte A - Chequea si llegó a régimen dentro de un límite de tiempo
+    //Parte A - Chequea si llegï¿½ a rï¿½gimen dentro de un lï¿½mite de tiempo
     //considerable, o si la respuesta es demasiado lenta
     
     //Error menor a medio grado, se considera que llegï¿½ a temperatura
@@ -2863,12 +2909,14 @@ void SmartPID(void) {
         }
                         
         //and modifies Kp or Ki to make it heat up a bit faster.
-        if(smartPID.ul_errorAvg>200) {           //AvgError es mayor a 20 grados, incremento ambos Kp y Ki
+        /*if(smartPID.ul_errorAvg>200) {           //AvgError es mayor a 20 grados, incremento ambos Kp y Ki
             smartPID.f_aux=PID_calc.error/f_tempSet;
             smartPID.f_aux/=10;
             smartPID.f_aux+=1;
             K_PID.Kp*=smartPID.f_aux;
             K_PID.Ki*=smartPID.f_aux;
+            sprintf(st_UART2,"reach1 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+            flg_send2=1;
             Save_KPID_EEPROM();
         }
         else if(smartPID.ul_errorAvg>100) {       //faltan mas de 10 grados, incremento Kp
@@ -2876,19 +2924,25 @@ void SmartPID(void) {
             smartPID.f_aux/=10;
             smartPID.f_aux+=1;
             K_PID.Kp*=smartPID.f_aux;
+            sprintf(st_UART2,"reach2 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+            flg_send2=1;
             //sprintf(st_UART,"SMART PID -> Kp:%f\n\r\n",K_PID.Kp);
             //flg_send=1;
             Save_KPID_EEPROM();
-        } else if (smartPID.ul_errorAvg>50) {//Falta mas de 0.3 grados, pero menos de 10, incremento Ki
+        } else if (smartPID.ul_errorAvg>5) {//Falta mas de 0.5 grados, pero menos de 10, incremento Ki
             smartPID.f_aux=PID_calc.error/f_tempSet;
             smartPID.f_aux/=10;
             smartPID.f_aux+=1;
             K_PID.Ki*=smartPID.f_aux;
+            if(K_PID.Ki > PID_calc.KiMAX) K_PID.Ki = PID_calc.KiMAX;
+            sprintf(st_UART2,"reach3 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+            flg_send2=1;
             //sprintf(st_UART,"SMART PID -> Ki:%f\n\r\n",K_PID.Ki);
             //flg_send=1;
             Save_KPID_EEPROM();
-        }
-        
+        }*/
+        sprintf(st_UART2,"reach\r\n");
+        flg_send2=1;
         //increases reachTIMEOUT, to "reset" the entrance to this portion of SmartPID       
         smartPID.ul_reachTIMEOUT=calentar.ul_processCount+smartPID.ul_reachTIMEOUT_default;
         if(calentar.flg_llego) smartPID.ul_reachTIMEOUT+=smartPID.ul_reachTIMEOUT_default;          //if it has already reached temp. range, then it waits twice as long to check reachout
@@ -2899,79 +2953,198 @@ void SmartPID(void) {
 
 
     
-    //Parte B, chequea oscilación en la salida chequeando las pedientes instantáneas
-    
-    smartPID.f_currentSlope=f_temp-smartPID.f_tempAnt;      //calculates current slope. f_temp 15 = 1.5º
-    smartPID.f_tempAnt=f_temp;                              //stores current temperature as previous temperature for future slope calculation
-    //if(smartPID.f_currentSlope<0) smartPID.f_currentSlope*=-1;          //if it's negative, compute absolute value.
-    
-    if(smartPID.f_currentSlope>=1) {                //current slope is bigger than 0.1ºC (is rising)
-        if(!smartPID.flg_rising) {               //if it's NOT rising
-            smartPID.uc_signCount++;            //counts positive slope, to register change in slope
-        } else smartPID.uc_signCount=0;
-    } else if (smartPID.f_currentSlope<=-1) {       //current slope is below -0.1ºC (is falling)
-        if(smartPID.flg_rising) {               //if it's rising
-            smartPID.uc_signCount++;            //counts negative slope, to  register change in slope
-        } else smartPID.uc_signCount=0;
-    } else {                                        //current slope is near top or bottom peak, slope absolute value is belo 0.1º
-        if(smartPID.flg_rising) {                   //if it was rising, and slope is stuck, searches for peak value
-            if(f_temp>smartPID.f_peakMaxRising) {           //current temperature is above max registered temp.
-                smartPID.f_peakMaxRising=f_temp;                //Register new value for peak temp.
-                smartPID.ul_tMaxRising=calentar.ul_processCount;        //register time at peak temp.                
-            }
-        } else {                                    //if it was falling, and slope is stuck, searches for min  peak vallue
-            if(f_temp<smartPID.f_peakMaxFalling) {              //current temp. is below min peak
-                smartPID.f_peakMaxFalling=f_temp;               //registers new value for min peak.
-                smartPID.ul_tMaxFalling=calentar.ul_processCount;       //registeres time at min peak temp.
+    //Parte B, chequea oscilaciï¿½n en la salida chequeando las pedientes instantï¿½neas
+    if(true) {//if(PID_calc.i_sampleRate % I_SAMPLE_RATE) {
+        smartPID.f_currentSlope=f_temp-smartPID.f_tempAnt;      //calculates current slope. f_temp 15 = 1.5ï¿½
+        smartPID.f_tempAnt=f_temp;                              //stores current temperature as previous temperature for future slope calculation
+        //if(smartPID.f_currentSlope<0) smartPID.f_currentSlope*=-1;          //if it's negative, compute absolute value.
+
+        if(smartPID.f_currentSlope>1) {                //current slope is bigger than 0.1ï¿½C (is rising)
+            if(!smartPID.flg_rising) {               //if it's NOT rising
+                smartPID.uc_signCount++;            //counts positive slope, to register change in slope
+            } else smartPID.uc_signCount=0;
+        } else if (smartPID.f_currentSlope<1) {       //current slope is below -0.1ï¿½C (is falling)
+            if(smartPID.flg_rising) {               //if it's rising
+                smartPID.uc_signCount++;            //counts negative slope, to  register change in slope
+            } else smartPID.uc_signCount=0;
+        } else {                                        //current slope is near top or bottom peak, slope absolute value is below 0.1ï¿½
+            if(smartPID.flg_rising) {                   //if it was rising, and slope is stuck, searches for peak value
+                if(f_temp>smartPID.f_peakMaxRising) {           //current temperature is above max registered temp.
+                    smartPID.f_peakMaxRising=f_temp;                //Register new value for peak temp.
+                    smartPID.ul_tMaxRising=calentar.ul_processCount;        //register time at peak temp.                
+
+                    smartPID.f_peakMinPower=PID_calc.result;            //Min power occurs during max peak temp
+                }
+            } else {                                    //if it was falling, and slope is stuck, searches for min  peak vallue
+                if(f_temp<smartPID.f_peakMaxFalling) {              //current temp. is below min peak
+                    smartPID.f_peakMaxFalling=f_temp;               //registers new value for min peak.
+                    smartPID.ul_tMaxFalling=calentar.ul_processCount;       //registeres time at min peak temp.
+
+                    smartPID.f_peakMaxPower=PID_calc.result;            //max peak power occurs at min peak temp
+                }
             }
         }
-    }
-    
-    if(smartPID.uc_signCount>signChange) {          //enough sign counts to determine a lobe change
-        smartPID.uc_lobeCount++;                    //go to next lobe
-        smartPID.uc_signCount=0;                    //reset sign count for next lobe
-        smartPID.flg_rising=~smartPID.flg_rising;           //change in direction of slope
-        //if(smartPID.flg_rising) smartPID.flg_rising=0;      //if it was rising, now it's falling
-        //else smartPID.flg_rising=1;                         //else, it was falling, so now it's rising
+
+        if(smartPID.uc_signCount>signChange) {          //enough sign counts to determine a lobe change
+            smartPID.uc_lobeCount++;                    //go to next lobe
+            smartPID.uc_signCount=0;                    //reset sign count for next lobe
+            smartPID.flg_rising=~smartPID.flg_rising;           //change in direction of slope
+            //if(smartPID.flg_rising) smartPID.flg_rising=0;      //if it was rising, now it's falling
+            //else smartPID.flg_rising=1;                         //else, it was falling, so now it's rising
+            sprintf(st_UART2,"lobe:%d\r\n",smartPID.flg_rising);
+            flg_send2=1;
+        }
     }
 
-    if(smartPID.uc_lobeCount==4) {                  //went over 2 periods of oscillation
-        
-        smartPID.f_aux=smartPID.f_peakMaxRising-smartPID.f_peakMaxFalling;          //checks how much amplitude it got from max peak compared to min peak
-        
-        if(smartPID.f_aux>e_permitido){                 //If max peak amplitude is above allowed A value             
-            //smartPID.f_aux=smartPID.f_peakMaxRising-smartPID.f_peakMaxFalling;      //calculates total oscillation span
-            f_aux=PID_calc.I_termMAX/2.0;         //computes 1/2 of Iterm Max allowed value.
-            if(PID_calc.I_term>f_aux) {               //if current i_term is above 1/2 of max, and it oscillates,
-                PID_calc.I_term/=2.0;          //reduces I_term to 1/2 of current value
-            } else {            //I term is not that big, yet system oscillates
-                smartPID.f_aux/=f_tempSet;                  //divides value by set temperature
-                smartPID.f_aux+=1;                          //Adds 1, so it's 1.XXX value, to multiply
-                K_PID.Kp/=smartPID.f_aux;               //modifies Kp accordingly (decreases value)
-                //sprintf(st_UART2,"SMART PID Ovsh-> Kp:%f\n\r\n",K_PID.Kp);          //prints new value to USB 
-                //flg_send2=1;
-                Save_KPID_EEPROM();                 //Stores new value in EEPROM (FLASH)
+    if(0){//smartPID.uc_lobeCount==4) {                  //went over 2 periods of oscillation
+                
+        if(smartPID.f_peakMaxRising > f_tempSet) {                           //if rising max peak temp is above tempSet
+            //Needed power would be an average of max and min peak power measured during oscillation.
+            //Then, this average power would be obtained from I_term only, therefore, Ki will be calculated so that
+            //current I_term * Ki will yield such power (because at low error temperatures, Kp is disabled)
+            if(smartPID.f_peakMaxPower>99) smartPID.f_peakMaxPower=99;
+            if(smartPID.f_peakMinPower>99) smartPID.f_peakMinPower=99;
+            f_aux=f_tempSet-smartPID.f_peakMaxFalling;              //Max error occurred at min peak
+            //If safeguard is enabled, Kp influence varies with error value
+            if(VARIOS_flgs.SafeGuard){
+                if(f_aux > 50){                                         //Error was over 5ï¿½ Celsius
+                    f_aux2=K_PID.Kp*f_aux;
+                    if(f_aux2 < smartPID.f_peakMaxPower) smartPID.f_peakMaxPower-=f_aux2;       //substracts from peakPower the amount introduced by KpTerm
+                } else if(f_aux > 20){                                  //Error was over 2ï¿½ Celsius
+                    f_aux2=K_PID.Kp*f_aux;
+                    f_aux2/=2;
+                    if(f_aux2 < smartPID.f_peakMaxPower) smartPID.f_peakMaxPower-=f_aux2;       //substracts from peakPower the amount introduced by KpTerm
+                }
+            } else {                    //If not, Kp influence is no attenuated
+                f_aux2=K_PID.Kp*f_aux;
+                if(f_aux2 < smartPID.f_peakMaxPower) smartPID.f_peakMaxPower-=f_aux2;       //substracts from peakPower the amount introduced by KpTerm
             }
-        } else if (smartPID.f_aux>e_permitido2) {       //Overshoot is above 0.5º
-            //smartPID.f_aux=smartPID.f_peakMaxRising-smartPID.f_peakMaxFalling;      //calculates total oscillation span
-            f_aux=PID_calc.I_termMAX/4.0;
-            f_aux*=3;               //computes 3/4 of Iterm Max allowed value.
-            if(PID_calc.I_term>f_aux) {               //if current i_term is above 3/4 of max, and it oscillates,
-                PID_calc.I_term/=4.0;          //reduces I_term to 3/4 of current value
-                PID_calc.I_term*=3.0;
-            } else {            //I term is not that big, yet system oscillates
-                smartPID.f_aux/=f_tempSet;    //divides value by set temperature
-                smartPID.f_aux+=1;
-                K_PID.Ki/=smartPID.f_aux;                   //modifies Ki accordingly (slightly decreases value)
-                //sprintf(st_UART2,"SMART PID Ovsh-> Ki:%f\n\r\n",K_PID.Ki);          //prints new value to USB 
-                //flg_send2=1;
-                Save_KPID_EEPROM();                 //Stores new value in EEPROM (FLASH)
+
+            smartPID.f_aux=smartPID.f_peakMaxRising-smartPID.f_peakMaxFalling;          //checks how much amplitude it got from max peak compared to min peak
+            f_aux=PID_calc.I_term * K_PID.Ki;        //Computes output power due to Integral Term
+            if(f_aux > PID_TIME) {                      //Output Power due to Ki alone is saturating        (shouldn't enter here, never)
+                smartPID.f_aux/=f_tempSet;              //divides value by set temperature
+                smartPID.f_aux+=1.1;
+                K_PID.Ki/=smartPID.f_aux;               //modifies Ki accordingly (slightly decreases value)
+                sprintf(st_UART2,"lobe: 1 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                flg_send2=1;
+                Save_KPID_EEPROM();
+            } else {    //If I_term power doesn't saturates, then checks for estimate power needed (average between max and min power peaks)
+                f_aux=smartPID.f_peakMaxPower-smartPID.f_peakMinPower;
+                if(f_aux>3){            //There's a difference of at least 3% between max peak Power and min peak power
+                    f_aux=smartPID.f_peakMaxPower+smartPID.f_peakMinPower;          
+                    f_aux/=2;                                                               //computes power average between peaks
+                    if(f_aux) {
+                        K_PID.Ki=f_aux/PID_calc.I_term;
+                        //if(K_PID.Ki > PID_calc.KiMAX) K_PID.Ki = PID_calc.KiMAX;
+                        sprintf(st_UART2,"lobe: 2 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                        flg_send2=1;
+                        Save_KPID_EEPROM();
+                    }
+                } else {
+                    f_aux=smartPID.f_peakMaxPower-3;
+                    if(f_aux) {
+                        K_PID.Ki=f_aux/PID_calc.I_term;
+                        //if(K_PID.Ki > PID_calc.KiMAX) K_PID.Ki = PID_calc.KiMAX;
+                        sprintf(st_UART2,"lobe: 3 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                        flg_send2=1;
+                        Save_KPID_EEPROM();
+                    }
+                }
             }
-        }      
+        } else {                //oscillates, but not above TempSet
+            
+            smartPID.f_aux=smartPID.f_peakMaxRising-smartPID.f_peakMaxFalling;          //checks how much amplitude it got from max peak compared to min peak
+            if(smartPID.f_aux>smartPID.e_permitido2) {       //Oscillation span is above 10% of tempSet
+                f_aux=PID_calc.I_termMAX * K_PID.Ki;        //Computes output power due to Integral Term
+                f_aux2 = f_tempSet/DEFAULT_TempMax;      //Percentage of tempSet vs MaxTempSet
+                f_aux2*=PID_TIME;                           //Estimate power for set temperature
+                if(f_aux > PID_TIME) {                      //Output Power due to Ki alone is saturating        (shouldn't enter here, never)
+                    smartPID.f_aux/=f_tempSet;              //divides value by set temperature
+                    smartPID.f_aux+=1.1;
+                    K_PID.Ki/=smartPID.f_aux;               //modifies Ki accordingly (slightly decreases value)
+                    sprintf(st_UART2,"lobe: 4 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                    flg_send2=1;
+                    Save_KPID_EEPROM();
+                } else if (f_aux < f_aux2) {                //****************Output Power is below estimate power for tempSet
+                    smartPID.f_aux/=f_tempSet;              //divides value by set temperature
+                    smartPID.f_aux+=1;
+                    K_PID.Ki*=smartPID.f_aux;                   //modifies Ki accordingly (slightly increases value)                
+                    //if(K_PID.Ki > PID_calc.KiMAX) K_PID.Ki = PID_calc.KiMAX;
+                    sprintf(st_UART2,"lobe: 5 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                    flg_send2=1;
+                    Save_KPID_EEPROM();
+                } else if (calentar.ul_processCount > STABILIZATION_TIME) {         //It oscillates, and it's been on for over X hours
+                    smartPID.f_aux/=f_tempSet;                                      //divides value by set temperature
+                    smartPID.f_aux+=1;
+                    K_PID.Ki/=smartPID.f_aux;                                       //modifies Ki accordingly (slightly decreases value)                
+                    sprintf(st_UART2,"lobe: 6 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                    flg_send2=1;
+                    Save_KPID_EEPROM();
+                }
+                f_aux3 = K_PID.Kp * smartPID.f_aux;              //Computes output power due to current error and Proportional value
+                if (calentar.ul_processCount > STABILIZATION_TIME) {         //It oscillates, and it's been on for over X hours
+                    f_aux*=0.25;
+                    if(f_aux3 >= f_aux) {                            //Output Power due to Kp and oscillation amplitude is over one quarter of Iterm*Ki
+                        smartPID.f_aux/=f_tempSet;                  //divides oscillation amplitude by set temperature
+                        smartPID.f_aux+=1;
+                        K_PID.Kp/=smartPID.f_aux;                   //modifies Ki accordingly (slightly decreases value)
+                        sprintf(st_UART2,"lobe: 7 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                        flg_send2=1;
+                        Save_KPID_EEPROM();
+                    } 
+
+                }
+
+            } else if(smartPID.f_aux>smartPID.e_permitido){                 //If max peak amplitude is above allowed A value
+
+                f_aux=PID_calc.I_term * K_PID.Ki;        //Computes output power due to Integral Term
+                f_aux2 =  f_tempSet/DEFAULT_TempMax;      //Percentage of tempSet vs 300ï¿½ C
+                f_aux2*=PID_TIME;                           //Estimate power for set temperature
+
+                if (f_aux < f_aux2) {                //****************Output Power is below estimate power for tempSet
+                    smartPID.f_aux/=f_tempSet;              //divides value by set temperature
+                    smartPID.f_aux+=1;
+                    K_PID.Ki*=smartPID.f_aux;                   //modifies Ki accordingly (slightly increases value)                
+                    //if(K_PID.Ki > PID_calc.KiMAX) K_PID.Ki = PID_calc.KiMAX;
+                    sprintf(st_UART2,"lobe: 8 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                    flg_send2=1;
+                    Save_KPID_EEPROM();
+                } /*else if (calentar.ul_processCount > STABILIZATION_TIME) {         //It oscillates, and it's been on for over X hours
+                    smartPID.f_aux/=f_tempSet;                                      //divides value by set temperature
+                    smartPID.f_aux+=1;
+                    K_PID.Ki/=smartPID.f_aux;                                       //modifies Ki accordingly (slightly decreases value)                
+                    Save_KPID_EEPROM();
+                }*/
+
+                f_aux = K_PID.Kp * PID_calc.error;              //Computes output power due to current error and Proportional value
+                if (calentar.ul_processCount > STABILIZATION_TIME) {         //It oscillates, and it's been on for over X hours
+                    if(f_aux > PID_TIME) {                          //Output Power due to Kp alone is saturating
+                        smartPID.f_aux/=f_tempSet;                  //divides oscillation amplitude by set temperature
+                        smartPID.f_aux+=1;
+                        K_PID.Kp/=smartPID.f_aux;                   //modifies Kp accordingly (slightly decreases value)
+                        sprintf(st_UART2,"lobe: 9 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                        flg_send2=1;
+                        Save_KPID_EEPROM();
+                    } 
+                } else {
+                    if (f_aux < f_aux2) {                //Output Power is below estimate power for tempSet
+                        smartPID.f_aux/=f_tempSet;                  //divides value by set temperature
+                        smartPID.f_aux+=1;
+                        K_PID.Kp*=smartPID.f_aux;                   //modifies Kp accordingly (slightly increases value)
+                        sprintf(st_UART2,"lobe: 10 Kp:%f Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
+                        flg_send2=1;
+                        Save_KPID_EEPROM();
+                    }
+                }
+            }
+        }
         //finishes calculation, resets values to default for next period calculation
         smartPID.uc_lobeCount=0;                    //resets to 0
-        smartPID.f_peakMaxRising=0;                 //Max temperature for peak at rising edge set to 0º
-        smartPID.f_peakMaxFalling=5000;             //Min peak for falling edge set to 500º (above any reading, so it's ovewriten)
+        smartPID.f_peakMaxRising=0;                 //Max temperature for peak at rising edge set to 0ï¿½
+        smartPID.f_peakMaxFalling=5000;             //Min peak for falling edge set to 500ï¿½ (above any reading, so it's ovewriten)
+        smartPID.f_peakMaxPower=0;
+        smartPID.f_peakMinPower=0;
     }
     
     
@@ -3034,7 +3207,7 @@ void CheckOvershoot(void){
                 sprintf(st_UART2,"SMART PID Ovsh-> Kp:%f\n\rSMART PID Ovsh-> Ki:%f\r\n",K_PID.Kp,K_PID.Ki);
                 flg_send2=1;
             }*/
-            if(smartPID.e_overshoot>e_permitido2){     //superï¿½ el error permitido para overshoot
+            if(smartPID.e_overshoot>smartPID.e_permitido2){     //superï¿½ el error permitido para overshoot
                 smartPID.e_overshoot/=10000;
                 smartPID.e_overshoot+=1;
                 K_PID.Kp/=smartPID.e_overshoot;
@@ -3043,7 +3216,7 @@ void CheckOvershoot(void){
                 sprintf(st_UART2,"SMART PID Ovsh-> Kp:%f\n\r\n",K_PID.Kp);
                 flg_send2=1;
                 Save_KPID_EEPROM();
-            } else if(smartPID.e_overshoot>e_permitido){     //superï¿½ el error permitido para overshoot
+            } else if(smartPID.e_overshoot>smartPID.e_permitido){     //superï¿½ el error permitido para overshoot
                 smartPID.e_overshoot/=10000;
                 smartPID.e_overshoot+=1;
                 K_PID.Ki*=smartPID.e_overshoot;
@@ -3058,145 +3231,6 @@ void CheckOvershoot(void){
     }
 }
 
-
-
-
-
-// transmit the ws2812 led
-void ws2812_send(ws2812_ptr* led) {
-    int j;
-    long int val;
-    // the WS2812 wants bits in the order of:
-    // GGGGGGGGRRRRRRRRBBBBBBBB
-    // but I want to work in the opposite order. so i'm going to flip
-    // the bits around and do some shifting so my order is
-    // BBBBBBBBRRRRRRRRGGGGGGGG
-    // with the most significant bit on the far right. so the RGB value
-    // of 128 64 32, which normally would be:
-    // R : 0b10000000
-    // G : 0b01000000
-    // B : 0b00100000
-    // will become:
-    // BBBBBBBBRRRRRRRRGGGGGGGG
-    // 000001000000000100000010
-    val = (bitflip(led->b) << 16) + (bitflip(led->r) << 8) + (bitflip(led->g));
-
-    // now begin shifting them over one at a time
-    for(j = 0; j < 24; j++) {
-        // depending on if the currently viewed bit is 1 or 0
-        // the pin will stay high for different times
-
-        if (val & 1 == 1) {
-            // if it is a 1, let it stay higher a bit longer
-            W2812 = 1;
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-
-            W2812 = 0;
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-
-
-        } else {
-            // but a 0 should go high and then low as fast as possible
-            W2812 = 1;
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-
-            W2812 = 0;
-
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-            Nop();
-
-        }
-
-        // and then right shift to get the next bit
-        val = val >> (unsigned char)1;
-    }
-}
-
-void ws2812_Rst (void) {
-    W2812 = 1;
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-
-    W2812 = 0;
-
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-    Nop();
-
-    W2812 = 1;
-}
-
-// reverse the bits in a char
-unsigned long int bitflip(unsigned char b) {
-   b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
-   b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
-   b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
-   return (unsigned long int)b;
-}
 
 void PeltierOff(void) {             //Shuts down Cooling and Heating PWM
     CoolingPWM=0;                   //Cooling PWM Value set to 0
@@ -3221,3 +3255,50 @@ void CoolDown(unsigned int HowMuch){        //Set Cooling PWM
     CoolingPWM=HowMuch;                 //PWM Value
     CoolDown_EN=1;                      //Output Enable
 };
+
+
+//*************************************************************************
+void OutputControl(void) {
+
+    calentar.ui_outputRefresh++;
+    if(calentar.ui_outputRefresh > 99) {
+        calentar.ui_outputRefresh=0;
+    }
+        
+    if(!calentar.flg_inicioArriba) {     //if it didn't started above set temp
+        if(warmup.flg) {
+            calentar.flg_ONPID=1;
+            if(calentar.ul_processCount>warmup.ul_timer) {
+                warmup.flg=0;
+                calentar.flg_ONPID=0;
+                //Suma un error acumulado equivalente a una fracciï¿½n del tiempo de warmup
+            }
+        } else {
+            if(calentar.ui_outputRefresh<PID_calc.result) {
+                if(VARIOS_flgs.SafeGuard) {
+                    //Here it checks whether the temperature is PID error (temp - tempSet) is below safeLimit)
+                    //But we must check also, if the slope is positive or negative
+                    if(PID_calc.error<=calentar.i_safelimit) {          //Error is below safe-limit
+                        if(safeGuard.f_slope < 0) {                     //but if the current slope is negative
+                            calentar.flg_ONPID=1;                       //it still turns the output on
+                        } else {
+                            calentar.flg_ONPID=0;                       //otherwise, doesn't turn on the output (safeGuard)
+                        }
+                    } else {
+                        calentar.flg_ONPID=1;           //so, it's time to turn on the output
+                    }
+                } else {                        //SAFEGUARD is deactivated
+                    calentar.flg_ONPID=1;           //so, it's time to turn on the output
+                }
+            }
+            else {
+                calentar.flg_ONPID=0;
+            }
+        }
+    } else {
+        calentar.flg_ONPID=0;
+    }
+    
+    
+    //**************************************PID AutoTuning timing
+}

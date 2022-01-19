@@ -21,6 +21,20 @@
 inclusions, and functions declarations.
  
  @Version_control:
+ TDuC_v0.31:
+ * SmartPID calculation is improved. Takes into account that the values assigned to Ki, multiplied by the 
+ MAX_Iterm never exceeds maximum output power.
+ * Safeguard limit is computed based on tempSet, and MaxTempSet
+ * Some minor bug fixes in communication (there were bad conversions from int to float, but formatted as
+ ints when string was formed - %d of a float)
+ 
+ TDuC_v0.30:
+ * Changed unsigned long accumulator for ADC to unsigned long long, because of big averaging, it needed more room.
+ * Actual temperature is now the calculated on previous iteration, from a ratiometric computation,
+ using LM334 voltage across known resistor to calculate current, and with that and the voltage
+ across the PT100, it calculates the resistance, and therefore, computes the temperature
+ * Allowed errors for smartPID computation are based on 1 and 10% of tempSet now.
+  
  TDuC_v0.29:
  * Calculates temperature based on physical parameters from PT100 and LM334 measurements.
  * Adds calibration compensation (Ktemp2 and Ctemp2) to temperature calculation based on physical parameters.
@@ -73,7 +87,7 @@ inclusions, and functions declarations.
  if set temp is greater than current temp.
  * Buzzer programmed to OCM2, now sounds better.
  * Added counters for Buzzer to create different patterns.
- * Corrected Bug of "minus" sign when displaying "Cancelar"
+ * Corrected Bug of "minus" sign when displaying "Cancelar
  
  TDuC_v0.20:
  * DEVICE_POWER definition at compiler level, to set power percentages for 
@@ -98,7 +112,6 @@ inclusions, and functions declarations.
  * flg_borrar modified to be "safeguard". Turns off output when temperature exceeds
  setting point. Safeguard limit is set in 0.1º steps via USB.
  * Delete PID_calc.I_Term when process starts.
- 
  
  TDuC_v0.14:
  * SmartPID: improvements in functioning. Reaching timeout improved, and continues
@@ -155,8 +168,8 @@ inclusions, and functions declarations.
  */
 /* ************************************************************************** */
 
-#ifndef _EXAMPLE_FILE_NAME_H    /* Guard against multiple inclusion */
-#define _EXAMPLE_FILE_NAME_H
+#ifndef INCLUDE_H    /* Guard against multiple inclusion */
+#define INCLUDE_H
 
 
 /* ************************************************************************** */
@@ -174,41 +187,47 @@ inclusions, and functions declarations.
 #include "mcc_generated_files/pin_manager.h"
 #include "mcc_generated_files/interrupt_manager.h"
 
+#include "ws2812.h"
+
+//#include "MCP_3913.h"
 /* This section lists the other files that are included in this file.
  */
 
 #define versionA    0
-#define versionB    29
+#define versionB    31
 
-#define DEFAULT_TempMax     3000                //Max temperature (300ºC)
-
-#define DEFAULT_KTEMP       0.001257//0.001098;//0.001161;//0.001206;//0.001098;//0.000916662;//0.000730519;
-#define DEFAULT_CTEMP       3029.254639//2549.830078;//2746.878174;//2900.055176;//2549.830078;//2597.403;//2664.1806089812;//
+#define DEFAULT_KTEMP2       0.00114909187186//0.001091//0.001257//0.001098;//0.001161;//0.001206;//0.001098;//0.000916662;//0.000730519;
+#define DEFAULT_CTEMP2       2873.27659627068//2589.816162//3029.254639//2549.830078;//2746.878174;//2900.055176;//2549.830078;//2597.403;//2664.1806089812;//
 #define DEFAULT_LM334Comp   689250//2637100
-#define DEFAULT_KTEMP2      1
-#define DEFAULT_CTEMP2      0
+#define DEFAULT_KTEMP      1
+#define DEFAULT_CTEMP      0
 
 
-#define DEFAULT_KP          0.06959//0.005487;//0.019358;//151.7;//25.9;
-#define DEFAULT_KI          0.01350//0.000123;//0.00007;//1333.432;//833.58;//189.5;
-#define DEFAULT_KD          1.255911//1.097152;//170.5;//38.76;
+#define DEFAULT_KP          0.05254//0.005487;//0.019358;//151.7;//25.9;
+#define DEFAULT_KI          0.002//0.000123;//0.00007;//1333.432;//833.58;//189.5;
+#define DEFAULT_KD          0.1794966//1.097152;//170.5;//38.76;
 
 
 #define CONVERT_A           738.63636364//147.727272727//2954.54545455//
 #define CONVERT_B           2597.4025974
 
-//MainOutput to control heating element
+
+#define STABILIZATION_TIME  2400                    //40 minutes * 60 seconds (for stabilization max period)
+//MainOutput to control heating element 
 #define MainOutput  BUS595_data.OUT_AC2
 
 //Light Output controls inner light
 #define LightOutput BUS595_data.OUT_AC3
 
 
-//POWER_OUTPUT_A for 100W power oven, and POWER_OUTPUT_B for 1kW power oven
+//POWER_OUTPUT_A for 100W power oven
+//POWER_OUTPUT_B for 1kW power oven
 //POWER_OUTPUT_C for Peltier oven
 #define POWER_OUTPUT_B
 
 #ifdef POWER_OUTPUT_A       //100 W Power
+
+#define DEFAULT_TempMax     1000.0                //Max temperature (100.0ºC)
 
 #define TwoPointCal_Output  4           // 1 /(N+1)  % -> 33%
 #define PIDAT_Output    7               //70% power output during PIDAT
@@ -220,15 +239,19 @@ inclusions, and functions declarations.
 
 #ifdef POWER_OUTPUT_B         // 1kW Power
 
+#define DEFAULT_TempMax     2000.0                //Max temperature (300.0ºC)
+
 #define TwoPointCal_Output  4       // 1 /(N+1)  % -> 20%
 #define PIDAT_Output    1           //10% power output during PIDAT
-#define Cal_PreHeat     600         //Pre heat 60 segundos
+#define Cal_PreHeat     300         //Pre heat 30 segundos
 
 #define SModel     0x0B00
 
 #endif
 
 #ifdef POWER_OUTPUT_C           //Peltier Output
+
+#define DEFAULT_TempMax     800.0                //Max temperature (80.0ºC)
 
 #define TwoPointCal_Output  7           // 1 /(N+1)  % -> 33%
 #define PIDAT_Output    7               //70% power output during PIDAT
@@ -503,28 +526,13 @@ float f_sumY, f_sumX, f_sumXY, f_sumX2, f_CalAux, f_CalAux2;
 //****************************************************************************
 
 //********************************   W2812
-#ifndef WS2812_H
-#define	WS2812_H
-
-#define W2812 LATAbits.LATA8
-
-int rgb_timeout;
-
-typedef struct {
-    unsigned char   r;
-    unsigned char   b;
-    unsigned char   g;
-} ws2812_ptr;
+//#define W2812 LATAbits.LATA8
 
 ws2812_ptr led;
 ws2812_ptr led2;
 ws2812_ptr led3;
-// transmit a single WS2812
-void ws2812_send(ws2812_ptr* led);
-void ws2812_Rst (void);
-unsigned long int bitflip(unsigned char b);
 
-#endif	/* WS2812_H */
+int rgb_timeout;
 
 //**************************** RGB loop
 unsigned char RGB_counter, RGB_led;
@@ -764,23 +772,28 @@ struct{
 #define signChange  3
 #define processOvershoot        1000
 #define SPID_loop               5000
-#define e_permitido             150             //15.0ºC
-#define e_permitido2            5               //00.5ºC
+//#define e_permitido             150             //15.0ºC
+//#define e_permitido2            5               //00.5ºC
 
 //************************************ PID Calculations
 struct {
     int P_term;
     
+    char i_sampleRate;
     float I_term;
     float I_termMAX;
     float I_termMin;
     
+    int d_sampleRate;
     float D_term;
+    float D_rest;
     float D_lastError;
     
     float aux;
     float error;
     float result;
+    
+    float KiMAX;                // computed based on I_termMAX and PID_TIME
 } PID_calc;
 //*****************************************************************************
 
@@ -820,12 +833,14 @@ struct {
     unsigned char enableOutput:1;           //Whether the output should be on or not, during heating process
     unsigned char flg_cambio:1;
     unsigned char flg_inicioArriba:1;       //Flag to indicate that the process starts when current temperature is above set temperature.
-    unsigned char flg_otro:1;           //extra room for another process flag.
+    unsigned char flg_10ms:1;           //extra room for another process flag.
 
     unsigned char uc_process1sec;       //contador de 0 a 9 para 1 segundo en contador de proceso
+    unsigned char uc_10msCounter;       //coutner from 0 to 9 for 10ms flag
    
 //unsigned int ui_PIDcounter;         //PID timer counter
     unsigned int ui_PIDrefresh;         //PID output refresh value
+    unsigned int ui_outputRefresh;      //Output power counter (compared to PID_calc.result)
     
 //unsigned long ul_counter;
     unsigned long ul_processCount;      //Contador de segundos desde inicio de proceso
@@ -852,7 +867,7 @@ struct {
 } calentar;
 //*****************************************************************************
 
-float f_aux;
+float f_aux, f_aux2, f_aux3;
 
 //******************SmartPID variables
 //If slope is below SlopeChange value, it's because it's reaching a positive or negativve
@@ -872,6 +887,9 @@ struct {
     unsigned int ui_SPIDcounter;        //Contador de loop de smartPID
     
     unsigned int ui_t1, ui_t2;             //Períodos de oscilación
+    
+    unsigned int ui_isBelow;                //counts how many seconds temp is below setTemp. 
+    unsigned int ui_belowOverflow;          //If overflown, increases Ki to attempt to lift the curve
 //unsigned int ui_dif;
 
     unsigned long ul_tMaxRising;        //time of temperature max peak
@@ -898,6 +916,9 @@ struct {
     float f_peakMaxRising;          //peak temperature at rising lobe
     float f_peakMaxFalling;         //peak temperaturea at falling lobe
     
+    float f_peakMaxPower;           //peak max power during oscillation
+    float f_peakMinPower;           //peak min power during oscillation
+    
     float e_overshoot;              //Error durante overshoot
     float e_max3;                   //Máximo error durante oscilación num 3
     float e_max4;                   //Máximo error durante oscilación num 4
@@ -906,11 +927,29 @@ struct {
     
     float f_currentSlope;           //ccurrent slope calculation
     float f_tempAnt;                //Previous temperature for slope computation
+        
+    float f_aux, f_aux2;
     
-    float f_aux,f_aux2;
+    float e_permitido;              //allowed error for smartPID computation (1% of tempSet)
+    float e_permitido2;             //bigger error allowed for smartPID computation (10% of tempSet)
+    
 } smartPID;
 //*****************************************************************************
 
+
+//******************safeGuard variables
+//Used to check on the current slope, and act if slope is negative
+struct {
+    unsigned char slopeCounter;
+    float f_previousTemp;
+    float f_slope;
+} safeGuard;
+
+
+
+//*****************************************************************************
+
+//*****************************************************************************
 /*unsigned char flg_inicio;           //Inicia proceso de calentar.flg_smartPID Chequea si hay overshoot
 unsigned char flg_llego;            //llegó a la temperatura seteada
 unsigned char uc_lobeCount;         //Contador de posición dentro de la oscilación
@@ -1038,7 +1077,6 @@ unsigned char uc_error, uc_display;
 struct {
     unsigned char readADC:1;
     unsigned char rotateRight:1;
-    
 } operationFlgs;
 
 unsigned char uc_turnoff;
@@ -1090,136 +1128,12 @@ union {
     unsigned long L:32;
 } TimeDefault;
 
-unsigned long ul_mcp, ul_mcp2;
+unsigned long long ul_mcp, ul_mcp2;
 
 /* Provide C++ Compatibility */
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-
-    /* ************************************************************************** */
-    /* ************************************************************************** */
-    /* Section: Constants                                                         */
-    /* ************************************************************************** */
-    /* ************************************************************************** */
-
-    /*  A brief description of a section can be given directly below the section
-        banner.
-     */
-
-
-    /* ************************************************************************** */
-    /** Descriptive Constant Name
-
-      @Summary
-        Brief one-line summary of the constant.
-    
-      @Description
-        Full description, explaining the purpose and usage of the constant.
-        <p>
-        Additional description in consecutive paragraphs separated by HTML 
-        paragraph breaks, as necessary.
-        <p>
-        Type "JavaDoc" in the "How Do I?" IDE toolbar for more information on tags.
-    
-      @Remarks
-        Any additional remarks
-     */
-#define EXAMPLE_CONSTANT 0
-
-
-    // *****************************************************************************
-    // *****************************************************************************
-    // Section: Data Types
-    // *****************************************************************************
-    // *****************************************************************************
-
-    /*  A brief description of a section can be given directly below the section
-        banner.
-     */
-
-
-    // *****************************************************************************
-
-    /** Descriptive Data Type Name
-
-      @Summary
-        Brief one-line summary of the data type.
-    
-      @Description
-        Full description, explaining the purpose and usage of the data type.
-        <p>
-        Additional description in consecutive paragraphs separated by HTML 
-        paragraph breaks, as necessary.
-        <p>
-        Type "JavaDoc" in the "How Do I?" IDE toolbar for more information on tags.
-
-      @Remarks
-        Any additional remarks
-        <p>
-        Describe enumeration elements and structure and union members above each 
-        element or member.
-     */
-    
-
-
-    // *****************************************************************************
-    // *****************************************************************************
-    // Section: Interface Functions
-    // *****************************************************************************
-    // *****************************************************************************
-
-    /*  A brief description of a section can be given directly below the section
-        banner.
-     */
-
-    // *****************************************************************************
-    /**
-      @Function
-        int ExampleFunctionName ( int param1, int param2 ) 
-
-      @Summary
-        Brief one-line description of the function.
-
-      @Description
-        Full description, explaining the purpose and usage of the function.
-        <p>
-        Additional description in consecutive paragraphs separated by HTML 
-        paragraph breaks, as necessary.
-        <p>
-        Type "JavaDoc" in the "How Do I?" IDE toolbar for more information on tags.
-
-      @Precondition
-        List and describe any required preconditions. If there are no preconditions,
-        enter "None."
-
-      @Parameters
-        @param param1 Describe the first parameter to the function.
-    
-        @param param2 Describe the second parameter to the function.
-
-      @Returns
-        List (if feasible) and describe the return values of the function.
-        <ul>
-          <li>1   Indicates an error occurred
-          <li>0   Indicates an error did not occur
-        </ul>
-
-      @Remarks
-        Describe any special behavior not described above.
-        <p>
-        Any additional remarks.
-
-      @Example
-        @code
-        if(ExampleFunctionName(1, 2) == 0)
-        {
-            return 3;
-        }
-     */
-    int ExampleFunction(int param1, int param2);
-
 
     /* Provide C++ Compatibility */
 #ifdef __cplusplus

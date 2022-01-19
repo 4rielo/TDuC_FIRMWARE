@@ -51,21 +51,21 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "usb/usb.h"
-#include "tmr1.h"
-#include "tmr2.h"
-#include "mccp1_compare.h"
 #include "mccp2_compare.h"
-#include "mccp3_compare.h"
-#include "watchdog.h"
-#include "tmr3.h"
 #include "interrupt_manager.h"
 #include "exceptions.h"
-#include "sccp7_compare.h"
+#include "mccp3_compare.h"
+#include "mccp1_compare.h"
 #include "adc1.h"
-#include "spi1.h"
-#include "spi2.h"
+#include "tmr1.h"
+#include "tmr2.h"
+#include "watchdog.h"
+#include "tmr3.h"
 #include "uart2.h"
+#include "usb/usb.h"
+#include "sccp7_compare.h"
+#include "spi2.h"
+#include "spi1.h"
 
 #warning "This file will be removed in future MCC releases. Use system.h instead."
 

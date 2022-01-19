@@ -25,8 +25,8 @@
  */
 
 /* TODO:  Include other files here if needed. */
-#include "MCP_3913.h"
 #include "include.h"
+#include "MCP_3913.h"
 #include "mcc_generated_files/mcc.h"
 #include "mcc_generated_files/spi2.h"
 #include "mcc_generated_files/uart2.h"
@@ -58,7 +58,7 @@
   @Remarks
     Any additional remarks
  */
-int global_data;
+//int global_data;
 
 
 /* ************************************************************************** */
@@ -181,7 +181,7 @@ char Config_MCP(void) {         //Configura el ADC MCP
     uc_sequence=SPI2BUF;
     MCP_CS_SetHigh();
     
-    Delayms(100);
+    Delay_loop(100);
     
     //Reads register 0x09 (Gain) and compare it with written value
     while(SPI2STATbits.RXBUFELM) uc_aux=SPI2BUF;
@@ -281,17 +281,17 @@ void Read_MCP(void) {           //Lectura ADC MCP
         ul_mcp=0;
         ul_mcp2=0;
         
-        if(l_334) f_lm334=(float) l_temp/l_334;
-        f_lm334*=CONVERT_A;
-        f_lm334-=CONVERT_B;
-        
-        f_lm334*=Convert.K_temp2;
-        f_lm334-=Convert.C_temp2;
+        if(l_334) f_temp=(float) l_temp/l_334;
+        f_temp*=CONVERT_A;
+        f_temp-=CONVERT_B;
         
         l_compensation=l_334-Convert.LM334_comp;
         if(Convert.flg_lm334) l_temp-=l_compensation;
         
-        f_temp=l_temp*Convert.K_temp;
+        f_lm334=l_temp*Convert.K_temp2;
+        f_lm334-=Convert.C_temp2;
+        
+        f_temp*=Convert.K_temp;
         f_temp-=Convert.C_temp;
         
         
